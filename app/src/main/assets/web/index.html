@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AndroidCam Remote</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #1a1a2e;
+            color: #fff;
+            min-height: 100vh;
+        }
+        header {
+            background: #16213e;
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }
+        header h1 { font-size: 1.4rem; font-weight: 600; }
+        .status-dot {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #e94560;
+            margin-right: 8px;
+        }
+        .status-dot.connected { background: #4ecdc4; }
+        .main {
+            display: grid;
+            grid-template-columns: 1fr 320px;
+            gap: 16px;
+            padding: 16px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        @media (max-width: 900px) {
+            .main { grid-template-columns: 1fr; }
+        }
+        .main.panel-hidden { grid-template-columns: 1fr; }
+        .main.panel-hidden .control-panel { display: none; }
+        .panel-toggle {
+            background: #0f3460;
+            color: #fff;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: all 0.2s;
+        }
+        .panel-toggle:hover { background: #1a4a7a; }
+        .video-panel {
+            background: #0f0f1a;
+            border-radius: 12px;
+            overflow: hidden;
+            position: relative;
+            min-height: 300px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .video-panel img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        .video-placeholder {
+            color: #555;
+            text-align: center;
+            padding: 40px;
+        }
+        .control-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .control-section {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 16px;
+        }
+        .control-section h3 {
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #888;
+            margin-bottom: 12px;
+        }
+        .btn {
+            background: #0f3460;
+            color: #fff;
+            border: none;
+            padding: 12px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.95rem;
+            transition: all 0.2s;
+            width: 100%;
+        }
+        .btn:hover { background: #1a4a7a; }
+        .btn:active { transform: scale(0.98); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-danger { background: #e94560; }
+        .btn-danger:hover { background: #d63851; }
+        .btn-success { background: #4ecdc4; color: #1a1a2e; }
+        .btn-success:hover { background: #3dbdb4; }
+        .btn-secondary { background: #2a2a4a; }
+        .btn-secondary:hover { background: #3a3a5a; }
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+        .select-group { margin-bottom: 12px; }
+        .select-group label {
+            display: block;
+            font-size: 0.8rem;
+            color: #aaa;
+            margin-bottom: 4px;
+        }
+        .select-group select, .text-input {
+            width: 100%;
+            padding: 10px;
+            background: #1a1a2e;
+            color: #fff;
+            border: 1px solid #333;
+            border-radius: 6px;
+            font-size: 0.9rem;
+        }
+        .slider-group { margin-bottom: 12px; }
+        .slider-group label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.8rem;
+            color: #aaa;
+            margin-bottom: 4px;
+        }
+        .slider-group input[type="range"] { width: 100%; }
+        .status-info {
+            font-size: 0.85rem;
+            color: #aaa;
+            line-height: 1.6;
+        }
+        .status-info span { color: #fff; }
+        .log-panel {
+            background: #0f0f1a;
+            border-radius: 8px;
+            padding: 12px;
+            height: 150px;
+            overflow-y: auto;
+            font-family: 'SF Mono', Monaco, monospace;
+            font-size: 0.75rem;
+        }
+        .log-entry { margin-bottom: 4px; color: #888; }
+        .log-entry.error { color: #e94560; }
+        .log-entry.success { color: #4ecdc4; }
+    </style>
+</head>
+<body>
+    <div id="recordedFileOverlay" style="display:none; position:fixed; top:64px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,0.85); color:#fff; padding:10px 16px; border-radius:8px; z-index:1000; font-size:0.9rem; max-width:90%; word-break:break-all;"></div>
+    <header>
+        <h1>📹 AndroidCam Remote</h1>
+        <div style="display:flex; align-items:center; gap:12px;">
+            <button class="panel-toggle" id="btnTogglePanel" onclick="togglePanel()">⚙ Hide Panel</button>
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">Disconnected</span>
+        </div>
+    </header>
+
+    <div class="main">
+        <div class="video-panel">
+            <div class="video-placeholder" id="videoPlaceholder">
+                <p>Connect to your Android device</p>
+                <p style="font-size: 0.8rem; margin-top: 8px;">
+                    Enter the token below (shown in the app notification)
+                </p>
+            </div>
+            <img id="mjpegStream" style="display:none;" alt="Camera stream">
+        </div>
+
+        <div class="control-panel">
+            <div class="control-section">
+                <h3>Connection</h3>
+                <div class="select-group">
+                    <label>Device</label>
+                    <input type="text" id="deviceIp" class="text-input" readonly tabindex="-1">
+                </div>
+                <div class="select-group">
+                    <label>Token</label>
+                    <input type="text" id="deviceToken" placeholder="12-char token" class="text-input">
+                </div>
+                <button class="btn btn-primary" onclick="connect()">Connect</button>
+            </div>
+
+            <div class="control-section">
+                <h3>Streaming</h3>
+                <button class="btn btn-success" id="btnStream" onclick="toggleStreaming()" disabled>
+                    ▶ Start Streaming
+                </button>
+            </div>
+
+            <div class="control-section">
+                <h3>Recording</h3>
+                <button class="btn btn-danger" id="btnRecord" onclick="toggleRecording()" disabled>
+                    ⏺ Start Recording
+                </button>
+            </div>
+
+            <div class="control-section">
+                <h3>Camera</h3>
+                <div class="grid-2">
+                    <button class="btn btn-secondary" onclick="rotateCamera(90)">↻ 90°</button>
+                    <button class="btn btn-secondary" onclick="rotateCamera(180)">↻ 180°</button>
+                    <button class="btn btn-secondary" onclick="switchCamera()">📷 Switch</button>
+                    <button class="btn btn-secondary" onclick="toggleTorch()">🔦 Torch</button>
+                </div>
+            </div>
+
+            <div class="control-section">
+                <h3>Settings</h3>
+                <div class="select-group">
+                    <label>Recording Resolution</label>
+                    <select id="resolution" onchange="setResolution()">
+                        <option value="1920x1080">1080p</option>
+                        <option value="1280x720">720p</option>
+                        <option value="640x480">480p</option>
+                    </select>
+                </div>
+                <div class="select-group">
+                    <label>Video Storage</label>
+                    <select id="storageLocation" onchange="setStorageLocation()">
+                        <option value="internal">Internal (app)</option>
+                        <option value="external">External (shared)</option>
+                        <option value="custom">Custom (choose folder)</option>
+                    </select>
+                </div>
+                <div class="slider-group">
+                    <label>
+                        <span>Screen Timeout</span>
+                        <span id="screenTimeoutValue">30s</span>
+                    </label>
+                    <input type="range" id="screenTimeout" min="5" max="300" value="30"
+                           oninput="document.getElementById('screenTimeoutValue').textContent=this.value+'s'"
+                           onchange="setScreenTimeout()">
+                    <label style="margin-top: 4px;">
+                        <input type="checkbox" id="screenTimeoutEnabled" checked onchange="setScreenTimeout()">
+                        Enable screen timeout
+                    </label>
+                </div>
+            </div>
+
+            <div class="control-section">
+                <h3>Status</h3>
+                <div class="status-info" id="statusInfo">No connection</div>
+            </div>
+
+            <div class="control-section">
+                <h3>Activity Log</h3>
+                <div class="log-panel" id="logPanel"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let deviceUrl = '';
+        let token = '';
+        let lastStatus = null;
+        let statusTimer = null;
+        let failCount = 0;
+        const MAX_FAILS = 5;
+
+        function log(msg, type = '') {
+            const panel = document.getElementById('logPanel');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            const time = new Date().toLocaleTimeString();
+            entry.textContent = `[${time}] ${msg}`;
+            panel.appendChild(entry);
+            panel.scrollTop = panel.scrollHeight;
+            while (panel.children.length > 100) panel.removeChild(panel.firstChild);
+        }
+
+        function setStatus(connected) {
+            const dot = document.getElementById('statusDot');
+            const text = document.getElementById('statusText');
+            dot.className = connected ? 'status-dot connected' : 'status-dot';
+            text.textContent = connected ? 'Connected' : 'Disconnected';
+        }
+
+        function togglePanel() {
+            const main = document.querySelector('.main');
+            const btn = document.getElementById('btnTogglePanel');
+            const hidden = main.classList.toggle('panel-hidden');
+            btn.textContent = hidden ? '⚙ Show Panel' : '⚙ Hide Panel';
+        }
+
+        function apiUrl(path) {
+            const sep = path.includes('?') ? '&' : '?';
+            return `${deviceUrl}${path}${sep}token=${encodeURIComponent(token)}`;
+        }
+
+        async function api(path) {
+            const resp = await fetch(apiUrl(path), { method: 'POST' });
+            if (resp.status === 401) throw new Error('Invalid token');
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            return resp.text();
+        }
+
+        async function connect() {
+            token = document.getElementById('deviceToken').value.trim();
+            if (!token) { alert('Enter the token (shown in the app notification)'); return; }
+
+            localStorage.setItem('androidcam_token', token);
+
+            // The page is served by the device itself, so the device URL is
+            // exactly where this page was loaded from.
+            deviceUrl = window.location.origin;
+            try {
+                const resp = await fetch(`${deviceUrl}/health`);
+                if (!resp.ok) throw new Error('Device not reachable');
+
+                log('Connected to device', 'success');
+                setStatus(true);
+                failCount = 0;
+                document.getElementById('btnRecord').disabled = false;
+                document.getElementById('btnStream').disabled = false;
+
+                const img = document.getElementById('mjpegStream');
+                // If the stream drops (e.g. the app restarted), retry so the
+                // view recovers without a manual page reload.
+                img.onerror = () => {
+                    if (img.style.display === 'none') return;
+                    log('Stream interrupted, reconnecting…', 'warn');
+                    setTimeout(() => {
+                        if (img.style.display !== 'none') {
+                            img.src = apiUrl('/stream/mjpeg');
+                        }
+                    }, 2000);
+                };
+                img.src = apiUrl('/stream/mjpeg');
+                img.style.display = 'block';
+                document.getElementById('videoPlaceholder').style.display = 'none';
+
+                fetchStatus();
+                if (statusTimer) clearInterval(statusTimer);
+                statusTimer = setInterval(fetchStatus, 2000);
+            } catch (e) {
+                log(`Connection failed: ${e.message}`, 'error');
+                setStatus(false);
+            }
+        }
+
+        function disconnect() {
+            if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
+            setStatus(false);
+            document.getElementById('mjpegStream').style.display = 'none';
+            document.getElementById('videoPlaceholder').style.display = 'block';
+            document.getElementById('btnRecord').disabled = true;
+            document.getElementById('btnStream').disabled = true;
+        }
+
+        async function fetchStatus() {
+            if (!deviceUrl) return;
+            try {
+                const resp = await fetch(apiUrl('/api/status'));
+                if (resp.status === 401) {
+                    log('Invalid token', 'error');
+                    disconnect();
+                    return;
+                }
+                const data = await resp.json();
+                failCount = 0;
+                lastStatus = data;
+                updateStatus(data);
+            } catch (e) {
+                failCount++;
+                if (failCount >= MAX_FAILS) {
+                    log('Lost connection to device', 'error');
+                    disconnect();
+                }
+            }
+        }
+
+        function updateStatus(data) {
+            const info = document.getElementById('statusInfo');
+            info.innerHTML = '';
+            const fields = [
+                ['Streaming', data.streaming ? 'yes' : 'no'],
+                ['Recording', data.recording === 'recording' ? 'yes' : 'no'],
+                ['Camera', data.facing || 'back'],
+                ['Rotation', `${data.rotation || 0}°`],
+                ['Resolution', data.resolution || '1920x1080'],
+                ['Storage', data.storageLocation || 'internal'],
+                ['Videos saved', data.recordedVideos ?? 0],
+                ['Screen timeout', data.screenTimeoutEnabled ? `${data.screenTimeoutSeconds}s` : 'off'],
+            ];
+            if (data.error) fields.push(['Error', data.error]);
+            for (const [label, value] of fields) {
+                const row = document.createElement('div');
+                const labelSpan = document.createElement('span');
+                labelSpan.textContent = label + ': ';
+                const valueSpan = document.createElement('span');
+                valueSpan.textContent = value;
+                row.appendChild(labelSpan);
+                row.appendChild(valueSpan);
+                info.appendChild(row);
+            }
+            const streaming = data.streaming === true;
+            const recording = data.recording === 'recording';
+
+            const streamBtn = document.getElementById('btnStream');
+            streamBtn.textContent = streaming ? '■ Stop Streaming' : '▶ Start Streaming';
+            streamBtn.className = streaming ? 'btn btn-danger' : 'btn btn-success';
+
+            const btn = document.getElementById('btnRecord');
+            btn.textContent = recording ? '⏹ Stop Recording' : '⏺ Start Recording';
+            btn.className = recording ? 'btn btn-success' : 'btn btn-danger';
+            // Recording requires the camera to be live.
+            btn.disabled = !streaming && !recording;
+
+            // Keep the storage dropdown in sync.
+            const storageSel = document.getElementById('storageLocation');
+            if (storageSel && storageSel.value !== data.storageLocation) {
+                storageSel.value = data.storageLocation || 'internal';
+            }
+
+            // Show where a new recording was saved, for 5 seconds.
+            if (data.lastRecordedFile && data.lastRecordedFile !== lastSeenRecordedFile) {
+                lastSeenRecordedFile = data.lastRecordedFile;
+                showRecordedFile(data.lastRecordedFile);
+            }
+        }
+
+        let lastSeenRecordedFile = '';
+        let recordedFileTimer = null;
+        function showRecordedFile(path) {
+            const el = document.getElementById('recordedFileOverlay');
+            if (!el) return;
+            el.textContent = '📁 Saved: ' + path;
+            el.style.display = 'block';
+            if (recordedFileTimer) clearTimeout(recordedFileTimer);
+            recordedFileTimer = setTimeout(() => { el.style.display = 'none'; }, 5000);
+            log('Recording saved: ' + path, 'success');
+        }
+
+        async function toggleStreaming() {
+            const streaming = lastStatus?.streaming === true;
+            try {
+                if (streaming) {
+                    await api('/api/control/stop-streaming');
+                    log('Streaming stopped');
+                } else {
+                    await api('/api/control/start-streaming');
+                    log('Streaming started');
+                }
+                fetchStatus();
+            } catch (e) { log(`Streaming: ${e.message}`, 'error'); }
+        }
+
+        async function setStorageLocation() {
+            const location = document.getElementById('storageLocation').value;
+            try {
+                await api(`/api/control/storage-location?location=${location}`);
+                log(`Storage location: ${location}`);
+                fetchStatus();
+            } catch (e) { log(`Storage: ${e.message}`, 'error'); }
+        }
+
+        async function toggleRecording() {
+            const recording = lastStatus?.recording === 'recording';
+            try {
+                if (recording) {
+                    await api('/api/control/stop-recording');
+                    log('Recording stopped');
+                } else {
+                    await api('/api/control/start-recording');
+                    log('Recording started');
+                }
+                fetchStatus();
+            } catch (e) { log(`Recording: ${e.message}`, 'error'); }
+        }
+
+        async function rotateCamera(deg) {
+            try {
+                await api(`/api/control/rotate/${deg}`);
+                log(`Rotated to ${deg}°`);
+            } catch (e) { log(`Rotate: ${e.message}`, 'error'); }
+        }
+
+        async function switchCamera() {
+            const next = lastStatus?.facing === 'back' ? 'front' : 'back';
+            try {
+                await api(`/api/control/camera/${next}`);
+                log(`Switched to ${next} camera`);
+            } catch (e) { log(`Switch: ${e.message}`, 'error'); }
+        }
+
+        async function toggleTorch() {
+            try {
+                const text = await api('/api/control/toggle-torch');
+                log(text);
+            } catch (e) { log(`Torch: ${e.message}`, 'error'); }
+        }
+
+        async function setResolution() {
+            const res = document.getElementById('resolution').value;
+            try {
+                await api(`/api/control/resolution/${res}`);
+                log(`Resolution: ${res}`);
+            } catch (e) { log(`Resolution: ${e.message}`, 'error'); }
+        }
+
+        async function setScreenTimeout() {
+            const enabled = document.getElementById('screenTimeoutEnabled').checked;
+            const seconds = parseInt(document.getElementById('screenTimeout').value, 10);
+            try {
+                await api(`/api/control/screen-timeout?enabled=${enabled}&seconds=${seconds}`);
+                log(`Screen timeout: ${enabled ? seconds + 's' : 'disabled'}`);
+            } catch (e) { log(`Screen timeout: ${e.message}`, 'error'); }
+        }
+
+        // Show the device address (the page is served by the device itself)
+        document.getElementById('deviceIp').value = window.location.origin;
+        // Restore saved token
+        const savedToken = localStorage.getItem('androidcam_token');
+        if (savedToken) document.getElementById('deviceToken').value = savedToken;
+    </script>
+</body>
+</html>

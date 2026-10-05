@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AndroidCam</string>
+    <string name="service_title">AndroidCam</string>
+    <string name="service_running">Streaming camera to network</string>
+    <string name="channel_name">Camera Recording</string>
+    <string name="channel_description">Foreground service for video recording and streaming</string>
+    <string name="start_recording">● Record</string>
+    <string name="stop_recording">■ Stop</string>
+    <string name="start_streaming">▶ Stream</string>
+    <string name="stop_streaming">■ Stop stream</string>
+    <string name="status_streaming">Streaming on %1$s</string>
+    <string name="status_recording">Recording on %1$s</string>
+    <string name="status_camera_off">Camera off — tap Stream to start</string>
+    <string name="status_starting">Starting stream…</string>
+    <string name="record_requires_streaming">Start streaming before recording</string>
+    <string name="recorded_file_label">📁 Saved: %1$s</string>
+    <string name="settings_title">Settings</string>
+    <string name="settings_token_label">Token</string>
+    <string name="settings_token_hint">Auth token</string>
+    <string name="settings_interval_title">Interval recording</string>
+    <string name="settings_interval_label">Interval (seconds)</string>
+    <string name="settings_interval_hint">Re-arm continuous recording every N seconds</string>
+    <string name="settings_storage_label">Video storage</string>
+    <string name="settings_storage_internal">Internal (app)</string>
+    <string name="settings_storage_external">External (shared)</string>
+    <string name="settings_storage_custom">Custom (choose folder)</string>
+    <string name="settings_select_dir">Choose folder…</string>
+    <string name="settings_dir_selected">Recording folder updated</string>
+    <string name="settings_save">Save</string>
+    <string name="settings_cancel">Cancel</string>
+    <string name="settings_saved">Settings saved</string>
+    <string name="settings_invalid">Enter a valid token and positive numbers</string>
+</resources>

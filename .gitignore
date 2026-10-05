@@ -1,0 +1,25 @@
+# Gradle
+.gradle/
+build/
+local.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Kotlin
+.kotlin/
+
+# Android
+app/build/
+*.apk
+*.aab
+*.keystore
+
+# OS
+.DS_Store
+
+# Python (local dev helpers)
+__pycache__/
+*.pyc
