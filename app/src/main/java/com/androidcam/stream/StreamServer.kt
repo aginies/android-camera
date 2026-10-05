@@ -92,6 +92,11 @@ class StreamServer(
             seconds: Int,
         )
 
+        /** Whether timelapse frames get a date/time stamp burned in. */
+        fun timestampEnabled(): Boolean
+
+        fun setTimestampEnabled(enabled: Boolean)
+
         fun setStorageLocation(location: String): Boolean
 
         fun storageLocationName(): String
@@ -366,6 +371,13 @@ class StreamServer(
                         control.updateIntervalSettings(enabled, seconds)
                         call.respondText("Interval: ${if (enabled) "on" else "off"} (${seconds}s)")
                     }
+
+                    post("/timestamp") {
+                        if (!authorized(call)) return@post unauthorized(call)
+                        val enabled = call.parameters["enabled"]?.toBooleanStrictOrNull() ?: false
+                        control.setTimestampEnabled(enabled)
+                        call.respondText("Timestamp: ${if (enabled) "on" else "off"}")
+                    }
                 }
             }
         }
@@ -395,6 +407,7 @@ class StreamServer(
             put("timelapseFrames", deviceState.timelapseFrames)
             put("timelapseEncoding", deviceState.timelapseEncoding)
             put("timelapseProgress", deviceState.timelapseProgress)
+            put("timestampEnabled", control.timestampEnabled())
             put("error", deviceState.lastError ?: "")
         }
 
@@ -511,6 +524,15 @@ class StreamServer(
                                 put("seconds", seconds)
                             },
                         )
+                    }.toString()
+                }
+
+                "set_timestamp" -> {
+                    val enabled = cmd["enabled"]?.jsonPrimitive?.booleanOrNull ?: false
+                    control.setTimestampEnabled(enabled)
+                    buildJsonObject {
+                        put("status", "ok")
+                        put("timestampEnabled", enabled)
                     }.toString()
                 }
 

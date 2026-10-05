@@ -65,6 +65,7 @@ class RecordingService :
         private const val KEY_TOKEN = "token"
         private const val KEY_INTERVAL_ENABLED = "interval_enabled"
         private const val KEY_INTERVAL_SECONDS = "interval_seconds"
+        private const val KEY_TIMESTAMP = "timestamp_enabled"
         private const val KEY_STORAGE_LOCATION = "storage_location"
         private const val KEY_RESOLUTION = "resolution"
         private const val KEY_CUSTOM_TREE_URI = "custom_tree_uri"
@@ -115,6 +116,7 @@ class RecordingService :
     // Timelapse (interval capture) settings
     private var intervalEnabled = false
     private var intervalSeconds = DEFAULT_INTERVAL_SECONDS
+    private var timestampEnabled = false
 
     // Active timelapse session (null when disabled): captures one JPEG from
     // the stream every [intervalSeconds].
@@ -168,6 +170,8 @@ class RecordingService :
             }
         intervalEnabled = prefs.getBoolean(KEY_INTERVAL_ENABLED, false)
         intervalSeconds = prefs.getInt(KEY_INTERVAL_SECONDS, DEFAULT_INTERVAL_SECONDS)
+        timestampEnabled = prefs.getBoolean(KEY_TIMESTAMP, false)
+        deviceState.timestampEnabled = timestampEnabled
         storageLocation = prefs.getString(KEY_STORAGE_LOCATION, STORAGE_INTERNAL) ?: STORAGE_INTERNAL
         customTreeUri = prefs.getString(KEY_CUSTOM_TREE_URI, null)?.let { Uri.parse(it) }
         requestedQuality =
@@ -293,6 +297,17 @@ class RecordingService :
     /** Current interval (timelapse) settings for the control API. */
     override fun intervalSettings(): Pair<Boolean, Int> = intervalEnabled to intervalSeconds
 
+    /** Whether timelapse frames get a date/time stamp burned in. */
+    override fun timestampEnabled(): Boolean = timestampEnabled
+
+    /** Enable/disable the timestamp overlay on timelapse frames. */
+    override fun setTimestampEnabled(enabled: Boolean) {
+        timestampEnabled = enabled
+        deviceState.timestampEnabled = enabled
+        prefs.edit().putBoolean(KEY_TIMESTAMP, enabled).apply()
+        Timber.i("Timestamp overlay: ${if (enabled) "on" else "off"}")
+    }
+
     /** Start the stream server + mDNS advertising with the current [token]. */
     private fun startServerAndDiscovery() {
         streamServer = StreamServer(this, deviceState, token, this).also { it.start() }
@@ -335,7 +350,11 @@ class RecordingService :
     private fun startTimelapseSession() {
         if (timelapseCapture != null) return
         timelapseCapture =
-            TimelapseCapture(framesDir(), intervalSeconds.toLong() * 1000L) {
+            TimelapseCapture(
+                framesDir(),
+                intervalSeconds.toLong() * 1000L,
+                { deviceState.timestampEnabled },
+            ) {
                 deviceState.addTimelapseFrame()
             }.also {
                 deviceState.setTimelapseFrames(it.frameCount())
@@ -444,7 +463,10 @@ class RecordingService :
     }
 
     /** Encode [frames] into [muxer], reporting progress to [DeviceState]. */
-    private fun encodeAndReport(frames: List<File>, muxer: MediaMuxer): Boolean =
+    private fun encodeAndReport(
+        frames: List<File>,
+        muxer: MediaMuxer,
+    ): Boolean =
         TimelapseEncoder.encode(frames, muxer) { done, total ->
             deviceState.setTimelapseEncoding(true, done * 100 / total)
         }

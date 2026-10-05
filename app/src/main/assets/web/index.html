@@ -256,6 +256,10 @@
                         <option value="custom">Custom (choose folder)</option>
                     </select>
                 </div>
+                <label style="margin-top: 8px; display: block;">
+                    <input type="checkbox" id="timestampEnabled" onchange="setTimestamp()">
+                    Timestamp on timelapse frames
+                </label>
                 <div class="slider-group">
                     <label>
                         <span>Screen Timeout</span>
@@ -465,6 +469,12 @@
                 storageSel.value = data.storageLocation || 'internal';
             }
 
+            // Keep the timestamp checkbox in sync.
+            const tsBox = document.getElementById('timestampEnabled');
+            if (tsBox && tsBox.checked !== (data.timestampEnabled === true)) {
+                tsBox.checked = data.timestampEnabled === true;
+            }
+
             // Rebuild the resolution dropdown from the device's detected
             // capabilities (the hardcoded options remain as a fallback).
             const resSel = document.getElementById('resolution');
@@ -535,6 +545,14 @@
                 log(`Storage location: ${location}`);
                 fetchStatus();
             } catch (e) { log(`Storage: ${e.message}`, 'error'); }
+        }
+
+        async function setTimestamp() {
+            const enabled = document.getElementById('timestampEnabled').checked;
+            try {
+                await api(`/api/control/timestamp?enabled=${enabled}`);
+                log(`Timestamp: ${enabled ? 'on' : 'off'}`);
+            } catch (e) { log(`Timestamp: ${e.message}`, 'error'); }
         }
 
         async function toggleRecording() {

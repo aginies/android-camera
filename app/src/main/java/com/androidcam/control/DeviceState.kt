@@ -223,6 +223,16 @@ class DeviceState {
         timelapseListeners.remove(listener)
     }
 
+    // --- Timestamp overlay --------------------------------------------------------
+
+    // When true, timelapse frames get a date/time stamp burned in.
+    private val _timestampEnabled = AtomicBoolean(false)
+    var timestampEnabled: Boolean
+        get() = _timestampEnabled.get()
+        set(value) {
+            _timestampEnabled.set(value)
+        }
+
     // --- Screen timeout ---------------------------------------------------------
 
     private val _screenTimeoutEnabled = AtomicBoolean(true)

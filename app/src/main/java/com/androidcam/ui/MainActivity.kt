@@ -302,6 +302,7 @@ class MainActivity : AppCompatActivity() {
         val (enabled, intervalSec) = svc.getIntervalSettings()
         db.intervalSwitch.isChecked = enabled
         db.intervalInput.setText(intervalSec.toString())
+        db.timestampSwitch.isChecked = svc.timestampEnabled()
 
         // Storage location spinner
         val storageOptions =
@@ -353,6 +354,7 @@ class MainActivity : AppCompatActivity() {
         }
         svc.updateToken(token)
         svc.updateIntervalSettings(db.intervalSwitch.isChecked, intervalSec)
+        svc.setTimestampEnabled(db.timestampSwitch.isChecked)
         val storage =
             when (db.storageSpinner.selectedItemPosition) {
                 1 -> RecordingService.STORAGE_EXTERNAL
