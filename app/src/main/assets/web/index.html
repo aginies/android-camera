@@ -551,11 +551,11 @@
                 prusaBox.checked = data.prusaEnabled === true;
             }
             const prusaTok = document.getElementById('prusaToken');
-            if (prusaTok && data.prusaToken && prusaTok.value !== data.prusaToken) {
+            if (prusaTok && data.prusaToken && document.activeElement !== prusaTok && prusaTok.value !== data.prusaToken) {
                 prusaTok.value = data.prusaToken;
             }
             const prusaName = document.getElementById('prusaName');
-            if (prusaName && data.prusaName && prusaName.value !== data.prusaName) {
+            if (prusaName && data.prusaName && document.activeElement !== prusaName && prusaName.value !== data.prusaName) {
                 prusaName.value = data.prusaName;
             }
             const prusaInt = document.getElementById('prusaInterval');

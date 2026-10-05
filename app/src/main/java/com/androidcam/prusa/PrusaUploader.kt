@@ -141,7 +141,10 @@ class PrusaUploader(
                                 "Prusa: info rejected — invalid token: " +
                                     "${result.detail.take(200)}",
                             )
-                            fatal("Token invalid or expired — re-add the camera in Prusa Connect")
+                            fatal(
+                                "Token rejected (invalid, or bound to another device) — " +
+                                    "re-add the camera in Prusa Connect and save the new token",
+                            )
                             return
                         }
 
@@ -193,7 +196,10 @@ class PrusaUploader(
                                 "Prusa: snapshot rejected — invalid token: " +
                                     "${result.detail.take(200)}",
                             )
-                            fatal("Token invalid or expired — re-add the camera in Prusa Connect")
+                            fatal(
+                                "Token rejected (invalid, or bound to another device) — " +
+                                    "re-add the camera in Prusa Connect and save the new token",
+                            )
                             return
                         }
 
