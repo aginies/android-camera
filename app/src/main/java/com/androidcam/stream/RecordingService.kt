@@ -907,7 +907,10 @@ class RecordingService :
                     latestFrameProvider = { streamServer?.getLatestFrame() },
                     cameraInfoProvider = { cameraInfo() },
                     onState = { deviceState.setPrusaState(it) },
-                    onFatal = { prusaReleaseWakeLock(); updateNotification() },
+                    onFatal = {
+                        prusaReleaseWakeLock()
+                        updateNotification()
+                    },
                 )
         }
         if (prusaSettings.enabled) {
@@ -986,7 +989,9 @@ class RecordingService :
     /** Set the camera name shown in Prusa Connect (max 64 chars). */
     override fun setPrusaName(name: String) {
         val trimmed =
-            name.trim().take(PrusaConnectSettings.NAME_MAX_LENGTH)
+            name
+                .trim()
+                .take(PrusaConnectSettings.NAME_MAX_LENGTH)
                 .ifEmpty { PrusaConnectSettings.DEFAULT_CAMERA_NAME }
         prusaSettings = prusaSettings.copy(cameraName = trimmed)
         prefs.edit().putString(KEY_PRUSA_NAME, trimmed).apply()

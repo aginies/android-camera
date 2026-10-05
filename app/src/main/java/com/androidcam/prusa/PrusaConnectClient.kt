@@ -5,7 +5,6 @@ import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.header
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
-import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
@@ -104,28 +103,28 @@ class PrusaConnectClient(
                     }
                 }
             }.toString()
+        val requestUrl = url(s, "/c/info")
+        Timber.d("Prusa: PUT $requestUrl (fp=${s.fingerprint.take(8)}…, ${body.length} bytes)")
         return try {
             val response =
-                http.put(url(s, "/c/info")) {
+                http.put(requestUrl) {
                     header("Token", s.token)
                     header("Fingerprint", s.fingerprint)
                     contentType(ContentType.Application.Json)
                     setBody(body)
                 }
+            val text = runCatching { response.bodyAsText() }.getOrNull().orEmpty()
+            Timber.d("Prusa: /c/info <- HTTP ${response.status.value} ${text.take(300)}")
             when (response.status) {
                 HttpStatusCode.OK,
                 HttpStatusCode.Created,
                 HttpStatusCode.NoContent,
-                -> {
-                    PrusaResult.Ok(registeredFrom(response))
-                }
+                -> PrusaResult.Ok(registeredFromText(text))
 
-                else -> {
-                    classify(response)
-                }
+                else -> classify(response.status, text)
             }
         } catch (e: IOException) {
-            Timber.w("Prusa Connect /c/info failed: ${e.message}")
+            Timber.w("Prusa: /c/info network error: ${e.message}")
             PrusaResult.NetworkError(e.message ?: "network error")
         }
     }
@@ -133,24 +132,28 @@ class PrusaConnectClient(
     /** Upload one JPEG snapshot. Returns [PrusaResult.Ok] on 204. */
     suspend fun uploadSnapshot(jpeg: ByteArray): PrusaResult {
         val s = settingsProvider()
+        val requestUrl = url(s, "/c/snapshot")
+        Timber.d("Prusa: PUT $requestUrl (${jpeg.size} bytes)")
         return try {
             val response =
-                http.put(url(s, "/c/snapshot")) {
+                http.put(requestUrl) {
                     header("Token", s.token)
                     header("Fingerprint", s.fingerprint)
                     contentType(ContentType.Image.JPEG)
                     setBody(jpeg)
                 }
+            val text = runCatching { response.bodyAsText() }.getOrNull().orEmpty()
+            Timber.d("Prusa: /c/snapshot <- HTTP ${response.status.value} ${text.take(200)}")
             when (response.status) {
                 HttpStatusCode.NoContent,
                 HttpStatusCode.OK,
                 HttpStatusCode.Created,
                 -> PrusaResult.Ok()
 
-                else -> classify(response)
+                else -> classify(response.status, text)
             }
         } catch (e: IOException) {
-            Timber.w("Prusa Connect /c/snapshot failed: ${e.message}")
+            Timber.w("Prusa: /c/snapshot network error: ${e.message}")
             PrusaResult.NetworkError(e.message ?: "network error")
         }
     }
@@ -165,10 +168,9 @@ class PrusaConnectClient(
         path: String,
     ): String = "https://${s.hostname.trimEnd('/')}$path"
 
-    /** Parse `registered` from the /c/info response, if it is a JSON object. */
-    private suspend fun registeredFrom(response: HttpResponse): Boolean? {
+    /** Parse `registered` from the /c/info response body, if it is JSON. */
+    private fun registeredFromText(text: String): Boolean? {
         return try {
-            val text = response.bodyAsText()
             if (text.isBlank()) return null
             Json
                 .parseToJsonElement(text)
@@ -181,20 +183,18 @@ class PrusaConnectClient(
         }
     }
 
-    private suspend fun classify(response: HttpResponse): PrusaResult {
-        val detail =
-            runCatching { response.bodyAsText() }
-                .getOrNull()
-                .orEmpty()
-                .take(200)
-                .ifBlank { "HTTP ${response.status.value}" }
-        return when (response.status) {
+    private fun classify(
+        status: HttpStatusCode,
+        text: String,
+    ): PrusaResult {
+        val detail = text.take(200).ifBlank { "HTTP ${status.value}" }
+        return when (status) {
             HttpStatusCode.Unauthorized,
             HttpStatusCode.Forbidden,
             HttpStatusCode.NotFound,
             -> PrusaResult.InvalidToken(detail)
 
-            else -> PrusaResult.Rejected(response.status.value, detail)
+            else -> PrusaResult.Rejected(status.value, detail)
         }
     }
 }

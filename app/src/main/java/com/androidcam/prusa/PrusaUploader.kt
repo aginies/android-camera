@@ -1,5 +1,6 @@
 package com.androidcam.prusa
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,6 +55,9 @@ class PrusaUploader(
 
     @Volatile private var error: String? = null
 
+    /** Token length last reported as missing/invalid (avoid log spam). */
+    @Volatile private var lastLoggedTokenLen = -1
+
     /** Force a re-send of `PUT /c/info` on the next cycle (e.g. new IP). */
     fun markInfoStale() {
         infoStale = true
@@ -102,74 +106,127 @@ class PrusaUploader(
     private suspend fun loop(self: Job) {
         while (running) {
             self.ensureActive()
-            val settings = settingsProvider()
-            if (!settings.enabled || !PrusaConnectSettings.isValidToken(settings.token)) {
-                delay(POLL_WHEN_DISABLED_MS)
-                continue
-            }
-
-            // Registration phase: (re)send the camera info.
-            if (infoStale) {
-                infoStale = false
-                when (val result = client.sendInfo(cameraInfoProvider())) {
-                    is PrusaResult.Ok -> {
-                        registered = result.registered ?: true
-                        error = null
-                        publishState()
-                        Timber.i("Prusa Connect: info accepted (registered=$registered)")
+            try {
+                val settings = settingsProvider()
+                if (!settings.enabled || !PrusaConnectSettings.isValidToken(settings.token)) {
+                    if (settings.enabled && settings.token.length != lastLoggedTokenLen) {
+                        lastLoggedTokenLen = settings.token.length
+                        Timber.w(
+                            "Prusa: enabled but token is ${settings.token.length} chars " +
+                                "(need ${PrusaConnectSettings.TOKEN_LENGTH}) — waiting for a valid token",
+                        )
                     }
+                    delay(POLL_WHEN_DISABLED_MS)
+                    continue
+                }
 
-                    is PrusaResult.InvalidToken -> {
-                        fatal("Token invalid or expired — re-add the camera in Prusa Connect")
-                        return
-                    }
+                // Registration phase: (re)send the camera info.
+                if (infoStale) {
+                    infoStale = false
+                    Timber.d(
+                        "Prusa: sending camera info (name=${settings.cameraName}, " +
+                            "host=${settings.hostname}, fp=${settings.fingerprint.take(8)}…, " +
+                            "interval=${settings.intervalSeconds}s)",
+                    )
+                    when (val result = client.sendInfo(cameraInfoProvider())) {
+                        is PrusaResult.Ok -> {
+                            registered = result.registered ?: true
+                            error = null
+                            publishState()
+                            Timber.i("Prusa: info accepted (registered=$registered)")
+                        }
 
-                    is PrusaResult.Rejected -> {
-                        error = "Connect rejected info: ${result.detail}"
-                        publishState()
-                        infoStale = true
-                        delay(INFO_RETRY_DELAY_MS)
-                    }
+                        is PrusaResult.InvalidToken -> {
+                            Timber.w(
+                                "Prusa: info rejected — invalid token: " +
+                                    "${result.detail.take(200)}",
+                            )
+                            fatal("Token invalid or expired — re-add the camera in Prusa Connect")
+                            return
+                        }
 
-                    is PrusaResult.NetworkError -> {
-                        error = "Cannot reach Prusa Connect"
-                        publishState()
-                        infoStale = true
-                        delay(INFO_RETRY_DELAY_MS)
+                        is PrusaResult.Rejected -> {
+                            Timber.w(
+                                "Prusa: info rejected — HTTP ${result.code} " +
+                                    "${result.detail.take(200)}",
+                            )
+                            error = "Connect rejected info: ${result.detail}"
+                            publishState()
+                            infoStale = true
+                            delay(INFO_RETRY_DELAY_MS)
+                        }
+
+                        is PrusaResult.NetworkError -> {
+                            Timber.w("Prusa: info network error: ${result.detail}")
+                            error = "Cannot reach Prusa Connect"
+                            publishState()
+                            infoStale = true
+                            delay(INFO_RETRY_DELAY_MS)
+                        }
                     }
                 }
-            }
 
-            // Snapshot phase: one upload per interval until stopped.
-            while (running) {
-                self.ensureActive()
-                delay(settingsProvider().intervalSeconds * 1000L)
-                val frame = latestFrameProvider()
-                if (frame == null) continue // camera off — nothing to upload
-                when (val result = client.uploadSnapshot(frame)) {
-                    is PrusaResult.Ok -> {
-                        lastUploadMs = System.currentTimeMillis()
-                        error = null
-                        publishState()
+                // Snapshot phase: one upload per interval until stopped.
+                while (running) {
+                    self.ensureActive()
+                    delay(settingsProvider().intervalSeconds * 1000L)
+                    val frame = latestFrameProvider()
+                    if (frame == null) {
+                        Timber.d("Prusa: skipping upload — no frame yet (camera off?)")
+                        continue
                     }
+                    Timber.d("Prusa: uploading snapshot (${frame.size} bytes)")
+                    val started = System.currentTimeMillis()
+                    when (val result = client.uploadSnapshot(frame)) {
+                        is PrusaResult.Ok -> {
+                            lastUploadMs = System.currentTimeMillis()
+                            error = null
+                            publishState()
+                            Timber.i(
+                                "Prusa: snapshot uploaded OK (${frame.size} bytes, " +
+                                    "${System.currentTimeMillis() - started} ms)",
+                            )
+                        }
 
-                    is PrusaResult.InvalidToken -> {
-                        fatal("Token invalid or expired — re-add the camera in Prusa Connect")
-                        return
-                    }
+                        is PrusaResult.InvalidToken -> {
+                            Timber.w(
+                                "Prusa: snapshot rejected — invalid token: " +
+                                    "${result.detail.take(200)}",
+                            )
+                            fatal("Token invalid or expired — re-add the camera in Prusa Connect")
+                            return
+                        }
 
-                    is PrusaResult.Rejected -> {
-                        error = "Connect rejected snapshot: ${result.detail}"
-                        publishState()
-                    }
+                        is PrusaResult.Rejected -> {
+                            Timber.w(
+                                "Prusa: snapshot rejected — HTTP ${result.code} " +
+                                    "${result.detail.take(200)}",
+                            )
+                            error = "Connect rejected snapshot: ${result.detail}"
+                            publishState()
+                        }
 
-                    is PrusaResult.NetworkError -> {
-                        error = "Upload failed: ${result.detail}"
-                        publishState()
+                        is PrusaResult.NetworkError -> {
+                            Timber.w("Prusa: snapshot network error: ${result.detail}")
+                            error = "Upload failed: ${result.detail}"
+                            publishState()
+                        }
                     }
                 }
+                // Outer loop re-checks settings (interval/name/token changes).
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Never die silently: log, surface the error, and retry.
+                Timber.e(
+                    e,
+                    "Prusa: upload loop crashed — retrying in ${INFO_RETRY_DELAY_MS / 1000}s",
+                )
+                error = "Prusa error: ${e.message ?: e::class.java.simpleName}"
+                publishState()
+                infoStale = true
+                delay(INFO_RETRY_DELAY_MS)
             }
-            // Outer loop re-checks settings (interval/name/token changes).
         }
     }
 

@@ -29,6 +29,7 @@ import com.androidcam.R
 import com.androidcam.control.DeviceState
 import com.androidcam.databinding.ActivityMainBinding
 import com.androidcam.databinding.DialogSettingsBinding
+import com.androidcam.prusa.PrusaState
 import com.androidcam.stream.RecordingService
 import timber.log.Timber
 
@@ -367,14 +368,21 @@ class MainActivity : AppCompatActivity() {
             prusaIntervals.indexOf(prusa.intervalSeconds).coerceAtLeast(0),
         )
         db.prusaStatusText.text = prusaStatusText()
+        // Keep the status line live while the dialog is open.
+        val prusaStatusListener: (PrusaState) -> Unit = {
+            db.prusaStatusText.post { db.prusaStatusText.text = prusaStatusText() }
+        }
+        deviceState.addPrusaStateListener(prusaStatusListener)
 
-        AlertDialog
-            .Builder(this)
-            .setTitle(R.string.settings_title)
-            .setView(db.root)
-            .setPositiveButton(R.string.settings_save) { _, _ -> applySettings(svc, db) }
-            .setNegativeButton(R.string.settings_cancel, null)
-            .show()
+        val dialog =
+            AlertDialog
+                .Builder(this)
+                .setTitle(R.string.settings_title)
+                .setView(db.root)
+                .setPositiveButton(R.string.settings_save) { _, _ -> applySettings(svc, db) }
+                .setNegativeButton(R.string.settings_cancel, null)
+                .show()
+        dialog.setOnDismissListener { deviceState.removePrusaStateListener(prusaStatusListener) }
     }
 
     private fun applySettings(
@@ -407,7 +415,10 @@ class MainActivity : AppCompatActivity() {
 
         // Prusa Connect: apply token/name/interval first so the upload loop
         // starts with the new settings when it is enabled.
-        val prusaToken = db.prusaTokenInput.text.toString().trim()
+        val prusaToken =
+            db.prusaTokenInput.text
+                .toString()
+                .trim()
         if (prusaToken.isNotEmpty() && !svc.setPrusaToken(prusaToken)) {
             Toast.makeText(this, R.string.settings_prusa_token_invalid, Toast.LENGTH_LONG).show()
             return
@@ -427,13 +438,20 @@ class MainActivity : AppCompatActivity() {
     private fun prusaStatusText(): String {
         val s = deviceState.prusaState
         return when {
-            !s.enabled -> getString(R.string.settings_prusa_disabled)
-            s.error != null -> s.error
+            !s.enabled -> {
+                getString(R.string.settings_prusa_disabled)
+            }
+
+            s.error != null -> {
+                s.error
+            }
+
             s.registered -> {
                 val base = getString(R.string.settings_prusa_registered)
                 if (s.lastUploadMs > 0) {
                     val time =
-                        java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+                        java.text
+                            .SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
                             .format(java.util.Date(s.lastUploadMs))
                     "$base • ${getString(R.string.settings_prusa_last_upload, time)}"
                 } else {
@@ -441,7 +459,9 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            else -> getString(R.string.settings_prusa_registering)
+            else -> {
+                getString(R.string.settings_prusa_registering)
+            }
         }
     }
 
