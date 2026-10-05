@@ -16,7 +16,9 @@ H.264 MP4 video, and offers remote control via a token-protected web UI.
 - **Foreground service** — streaming and recording survive app backgrounding
 - **Screen timeout** — while recording, the screen turns off after a
   configurable idle time (a CPU wake lock keeps recording going)
-- **Local controls** — record button and tap-to-focus in the app
+- **Local controls** — record button, tap-to-focus, and a settings dialog
+  (token, timelapse, resolution, JPEG quality, storage location, Prusa
+  Connect)
 
 ## Quick Start
 
@@ -98,6 +100,10 @@ app/src/main/java/com/androidcam/
 │   └── DeviceState.kt         # Central device state (thread-safe)
 ├── discovery/
 │   └── MdnsDiscovery.kt       # mDNS/Bonjour service discovery
+├── prusa/
+│   ├── PrusaConnectClient.kt  # HTTP client for /c/info + /c/snapshot
+│   ├── PrusaConnectSettings.kt# Token/fingerprint/interval settings
+│   └── PrusaUploader.kt       # Snapshot upload loop (crash-proof)
 ├── stream/
 │   ├── RecordingService.kt    # Foreground service owning the pipeline
 │   └── StreamServer.kt        # Ktor HTTP/WebSocket server
@@ -116,6 +122,9 @@ All endpoints except `GET /health` require `?token=<token>`.
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/status` | GET | Current device state (JSON) |
+| `/api/resolutions` | GET | Supported resolutions ("WxH" strings, highest first) |
+| `/api/control/start-streaming` | POST | Start streaming (camera on) |
+| `/api/control/stop-streaming` | POST | Stop streaming (camera off) |
 | `/api/control/start-recording` | POST | Start recording (MP4) |
 | `/api/control/stop-recording` | POST | Stop recording |
 | `/api/control/camera/{facing}` | POST | Set camera (`front` / `back`) |
@@ -123,6 +132,10 @@ All endpoints except `GET /health` require `?token=<token>`.
 | `/api/control/toggle-torch` | POST | Toggle torch |
 | `/api/control/resolution/{res}` | POST | Set recording resolution (`1920x1080`, `1280x720`, `640x480`) |
 | `/api/control/screen-timeout?enabled={bool}&seconds={n}` | POST | Set screen timeout |
+| `/api/control/storage-location?location={loc}` | POST | Set storage (`internal` / `external` / `custom`) — app-only in the UI |
+| `/api/control/interval?enabled={bool}&seconds={n}` | POST | Set timelapse interval |
+| `/api/control/timestamp?enabled={bool}` | POST | Burn a date/time stamp into timelapse frames |
+| `/api/control/jpeg-quality?quality={10-100}` | POST | Set stream JPEG quality |
 | `/api/control/prusa-connect?enabled={bool}` | POST | Enable/disable Prusa Connect uploads |
 | `/api/control/prusa-token?value={20ch}` | POST | Set the Prusa Connect camera token |
 | `/api/control/prusa-name?name={name}` | POST | Set the camera name shown in Connect |
@@ -134,6 +147,8 @@ Connect to `ws://<ip>:8080/ws/control?token=<token>`. Send JSON commands,
 receive JSON responses:
 
 ```json
+{"action": "start_streaming"}
+{"action": "stop_streaming"}
 {"action": "start_recording"}
 {"action": "stop_recording"}
 {"action": "switch_camera"}
@@ -142,6 +157,10 @@ receive JSON responses:
 {"action": "toggle_torch"}
 {"action": "set_resolution", "resolution": "1280x720"}
 {"action": "set_screen_timeout", "enabled": true, "seconds": 30}
+{"action": "set_storage_location", "location": "external"}
+{"action": "set_interval", "enabled": true, "seconds": 60}
+{"action": "set_timestamp", "enabled": true}
+{"action": "set_jpeg_quality", "quality": 80}
 {"action": "set_prusa_connect", "enabled": true}
 {"action": "set_prusa_token", "token": "<20-char token>"}
 {"action": "set_prusa_name", "name": "Bench cam"}
@@ -196,13 +215,30 @@ Setup:
 
 Notes:
 
-- The token is bound to the printer you added the camera to. If you delete
-  the camera in Connect, the token stops working (401/403) and the app shows
-  an error — add the camera again and save the new token.
-- The `Fingerprint` header is a stable per-device ID generated on first run
-  and persisted.
+- The token is bound to the **first device fingerprint** that successfully
+  registers it. If a different device (fingerprint) tries to use the same
+  token, Connect rejects it with 403 ("Invalid camera 'token' or
+  'fingerprint'"). Deleting the camera in Connect invalidates the token;
+  re-adding it generates a new one.
+- The `Fingerprint` header is a stable 32-char per-device ID generated on
+  first run and persisted in `SharedPreferences`.
 - The backend hostname defaults to `connect.prusa3d.com` (self-hosted
   instances can be used by changing `PrusaConnectSettings.DEFAULT_HOSTNAME`).
+
+Diagnostics:
+
+- `adb logcat | grep -i prusa` shows every `/c/info` and `/c/snapshot`
+  request with fingerprint, byte counts, HTTP status and response body, plus
+  upload success/failure lines from the uploader loop.
+- A live JVM round-trip test runs the real uploader loop against
+  `connect.prusa3d.com`:
+
+  ```bash
+  ./gradlew :app:testDebugUnitTest --tests "com.androidcam.prusa.PrusaUploaderLiveTest"
+  ```
+
+  It needs a valid token and **binds that token to the test's fingerprint** —
+  use a throwaway camera entry, not the one your phone is using.
 
 ## Security Notes
 
