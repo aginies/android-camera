@@ -153,7 +153,7 @@ class RecordingService :
         cameraLifecycle.markStarted()
         startServerAndDiscovery()
         registerNetworkCallback()
-        resumeTimelapseSession()
+        cleanupLeftoverFrames()
         refreshSupportedResolutions()
         updateNotification()
         Timber.i("Service created (token: $token, camera off)")
@@ -290,9 +290,10 @@ class RecordingService :
             if (capture != null) {
                 // Running session keeps its frames; only the cadence changes.
                 capture.intervalMs = intervalSeconds.toLong() * 1000L
-            } else {
+            } else if (deviceState.recordingState == DeviceState.RecordingState.RECORDING) {
                 startTimelapseSession()
             }
+            // Otherwise the session starts with the next recording.
         } else {
             stopTimelapseSession()
         }
@@ -356,14 +357,18 @@ class RecordingService :
     // --- Timelapse (interval capture) -----------------------------------------
 
     /**
-     * Timelapse (a.k.a. interval recording): while enabled, one JPEG is
-     * captured from the stream every [intervalSeconds] ([TimelapseCapture]).
-     * When the session ends — disabled, streaming stopped, or leftover frames
-     * found at startup — the frames are assembled into an MP4 timelapse
-     * ([TimelapseEncoder]) and then deleted.
+     * Timelapse (a.k.a. interval recording): while a recording is active and
+     * the feature is enabled, one JPEG is captured from the stream every
+     * [intervalSeconds] ([TimelapseCapture]). When the recording stops, the
+     * frames are assembled into an MP4 timelapse ([TimelapseEncoder]) and
+     * then deleted. Each recording gets its own video: frames left over from
+     * a previous session are dropped when a new one starts.
      */
     private fun startTimelapseSession() {
         if (timelapseCapture != null) return
+        // Start from a clean slate so this video only contains frames from
+        // this session (leftovers from a previous one are dropped).
+        framesDir().listFiles()?.forEach { it.delete() }
         timelapseCapture =
             TimelapseCapture(
                 framesDir(),
@@ -422,14 +427,11 @@ class RecordingService :
         }
     }
 
-    /** Resume a persisted session, or collapse frames left by a killed one. */
-    private fun resumeTimelapseSession() {
-        if (intervalEnabled) {
-            startTimelapseSession()
-        } else if (framesDir().listFiles()?.isNotEmpty() == true) {
-            Timber.i("Collapsing leftover timelapse frames from a previous session")
-            finishTimelapse()
-        }
+    /** Drop frames left by a previous (possibly killed) session. */
+    private fun cleanupLeftoverFrames() {
+        val dir = framesDir()
+        dir.listFiles()?.forEach { it.delete() }
+        if (dir.exists()) dir.delete()
     }
 
     private fun framesDir(): File = File(filesDir, "timelapse_frames")
@@ -496,9 +498,6 @@ class RecordingService :
      */
     override fun startStreaming() {
         if (deviceState.isStreaming) return
-        // Resume the timelapse session if the feature is enabled: the session
-        // ends with each stream stop, so it must be re-armed on restart.
-        if (intervalEnabled) startTimelapseSession()
         val capturer =
             FrameCapturer(deviceState) { jpeg ->
                 streamServer?.publishFrame(jpeg)
@@ -532,7 +531,7 @@ class RecordingService :
     override fun stopStreaming() {
         if (!deviceState.isStreaming) return
         stopRecording()
-        // End any active timelapse session and assemble its frames.
+        // Safety net: stopRecording() already ended the timelapse session.
         stopTimelapseSession()
         cameraManager?.stopCamera()
         cameraManager = null
@@ -570,6 +569,7 @@ class RecordingService :
                 AppApplication.instance.acquireWakeLock()
                 updateNotification()
                 Timber.i("Recording started: ${file.absolutePath}")
+                if (intervalEnabled) startTimelapseSession()
                 true
             } else {
                 false
@@ -612,6 +612,7 @@ class RecordingService :
                 AppApplication.instance.acquireWakeLock()
                 updateNotification()
                 Timber.i("Recording started (custom): ${doc.uri}")
+                if (intervalEnabled) startTimelapseSession()
                 true
             } else {
                 false
@@ -631,6 +632,8 @@ class RecordingService :
         updateNotification()
         Timber.i("Recording stopped: ${currentRecordingFile?.absolutePath}")
         currentRecordingFile = null
+        // Assemble the timelapse frames captured during this recording.
+        stopTimelapseSession()
     }
 
     override fun switchCamera() {
