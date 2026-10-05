@@ -109,6 +109,9 @@ class RecordingService :
 
     private var token: String = ""
     private var currentRecordingFile: File? = null
+
+    /** True while a timelapse-only recording is active (no full video). */
+    private var timelapseOnlyRecording = false
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     // Camera lifecycle: stays STARTED for the service's lifetime so the camera
@@ -550,6 +553,17 @@ class RecordingService :
             Timber.w("Cannot record: streaming is off")
             return false
         }
+        // Timelapse mode: capture frames only; no full video is recorded.
+        if (intervalEnabled) {
+            startTimelapseSession()
+            timelapseOnlyRecording = true
+            deviceState.setRecordingState(DeviceState.RecordingState.RECORDING)
+            AppApplication.instance.acquireWakeLock()
+            updateNotification()
+            Timber.i("Timelapse recording started (every ${intervalSeconds}s)")
+            return true
+        }
+        timelapseOnlyRecording = false
         val camera =
             cameraManager
                 ?: run {
@@ -569,7 +583,6 @@ class RecordingService :
                 AppApplication.instance.acquireWakeLock()
                 updateNotification()
                 Timber.i("Recording started: ${file.absolutePath}")
-                if (intervalEnabled) startTimelapseSession()
                 true
             } else {
                 false
@@ -612,7 +625,6 @@ class RecordingService :
                 AppApplication.instance.acquireWakeLock()
                 updateNotification()
                 Timber.i("Recording started (custom): ${doc.uri}")
-                if (intervalEnabled) startTimelapseSession()
                 true
             } else {
                 false
@@ -626,12 +638,21 @@ class RecordingService :
 
     override fun stopRecording() {
         if (deviceState.recordingState != DeviceState.RecordingState.RECORDING) return
-        cameraManager?.stopRecording()
-        deviceState.setRecordingState(DeviceState.RecordingState.IDLE)
-        AppApplication.instance.releaseWakeLock()
-        updateNotification()
-        Timber.i("Recording stopped: ${currentRecordingFile?.absolutePath}")
-        currentRecordingFile = null
+        if (timelapseOnlyRecording) {
+            // No full video to stop; just end the timelapse capture.
+            deviceState.setRecordingState(DeviceState.RecordingState.IDLE)
+            AppApplication.instance.releaseWakeLock()
+            updateNotification()
+            Timber.i("Timelapse recording stopped")
+        } else {
+            cameraManager?.stopRecording()
+            deviceState.setRecordingState(DeviceState.RecordingState.IDLE)
+            AppApplication.instance.releaseWakeLock()
+            updateNotification()
+            Timber.i("Recording stopped: ${currentRecordingFile?.absolutePath}")
+            currentRecordingFile = null
+        }
+        timelapseOnlyRecording = false
         // Assemble the timelapse frames captured during this recording.
         stopTimelapseSession()
     }
@@ -864,6 +885,7 @@ class RecordingService :
         val recording = deviceState.recordingState == DeviceState.RecordingState.RECORDING
         val sub =
             when {
+                recording && timelapseOnlyRecording -> "Timelapse • $url"
                 recording -> "Recording • $url"
                 deviceState.isStreaming -> "Streaming • $url"
                 else -> "Camera off • $url"

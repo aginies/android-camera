@@ -6,6 +6,7 @@
     <string name="channel_name">Camera Recording</string>
     <string name="channel_description">Foreground service for video recording and streaming</string>
     <string name="start_recording">● Record</string>
+    <string name="start_timelapse">● Timelapse</string>
     <string name="stop_recording">■ Stop</string>
     <string name="start_streaming">▶ Stream</string>
     <string name="stop_streaming">■ Stop stream</string>

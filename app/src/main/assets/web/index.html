@@ -479,7 +479,9 @@
             streamBtn.className = streaming ? 'btn btn-danger' : 'btn btn-success';
 
             const btn = document.getElementById('btnRecord');
-            btn.textContent = recording ? '⏹ Stop Recording' : '⏺ Start Recording';
+            btn.textContent = recording
+                ? '⏹ Stop Recording'
+                : (data.intervalEnabled ? '⏺ Start Timelapse' : '⏺ Start Recording');
             btn.className = recording ? 'btn btn-success' : 'btn btn-danger';
             // Recording requires the camera to be live.
             btn.disabled = !streaming && !recording;

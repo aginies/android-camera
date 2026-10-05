@@ -308,7 +308,11 @@ class MainActivity : AppCompatActivity() {
         db.jpegQualityValue.text = svc.jpegQuality().toString()
         db.jpegQuality.setOnSeekBarChangeListener(
             object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                override fun onProgressChanged(
+                    seekBar: SeekBar?,
+                    progress: Int,
+                    fromUser: Boolean,
+                ) {
                     db.jpegQualityValue.text = (progress + 10).toString()
                 }
 
@@ -382,7 +386,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun onRecordingStateChanged(state: DeviceState.RecordingState) {
         val recording = state == DeviceState.RecordingState.RECORDING
-        binding.recordButton.setText(if (recording) R.string.stop_recording else R.string.start_recording)
+        val timelapseOn = service?.getIntervalSettings()?.first == true
+        binding.recordButton.setText(
+            when {
+                recording -> R.string.stop_recording
+                timelapseOn -> R.string.start_timelapse
+                else -> R.string.start_recording
+            },
+        )
         updateStreamStatus()
         if (recording) {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
