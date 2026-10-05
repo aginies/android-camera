@@ -310,6 +310,32 @@
             </div>
 
             <div class="control-section">
+                <h3>Prusa Connect</h3>
+                <label style="display: block;">
+                    <input type="checkbox" id="prusaEnabled" onchange="setPrusaConnect()">
+                    Upload snapshots to Prusa Connect (camera must be streaming)
+                </label>
+                <div class="select-group">
+                    <label>Token</label>
+                    <input type="text" id="prusaToken" placeholder="20-char token" class="text-input" onchange="setPrusaToken()">
+                </div>
+                <div class="select-group">
+                    <label>Camera name</label>
+                    <input type="text" id="prusaName" class="text-input" onchange="setPrusaName()">
+                </div>
+                <div class="select-group">
+                    <label>Snapshot interval</label>
+                    <select id="prusaInterval" onchange="setPrusaInterval()">
+                        <option value="10">10 s</option>
+                        <option value="30" selected>30 s</option>
+                        <option value="60">60 s</option>
+                        <option value="120">120 s</option>
+                    </select>
+                </div>
+                <div class="status-info" id="prusaStatus">disabled</div>
+            </div>
+
+            <div class="control-section">
                 <h3>Activity Log</h3>
                 <div class="log-panel" id="logPanel"></div>
             </div>
@@ -519,6 +545,34 @@
                 document.getElementById('jpegQualityValue').textContent = data.jpegQuality;
             }
 
+            // Keep the Prusa Connect controls in sync.
+            const prusaBox = document.getElementById('prusaEnabled');
+            if (prusaBox && prusaBox.checked !== (data.prusaEnabled === true)) {
+                prusaBox.checked = data.prusaEnabled === true;
+            }
+            const prusaTok = document.getElementById('prusaToken');
+            if (prusaTok && data.prusaToken && prusaTok.value !== data.prusaToken) {
+                prusaTok.value = data.prusaToken;
+            }
+            const prusaName = document.getElementById('prusaName');
+            if (prusaName && data.prusaName && prusaName.value !== data.prusaName) {
+                prusaName.value = data.prusaName;
+            }
+            const prusaInt = document.getElementById('prusaInterval');
+            if (prusaInt && data.prusaInterval && prusaInt.value !== String(data.prusaInterval)) {
+                prusaInt.value = String(data.prusaInterval);
+            }
+            const prusaStatus = document.getElementById('prusaStatus');
+            if (prusaStatus) {
+                prusaStatus.textContent = !data.prusaEnabled
+                    ? 'disabled'
+                    : (data.prusaError
+                        ? `⚠ ${data.prusaError}`
+                        : data.prusaRegistered
+                            ? `✓ registered${data.prusaLastUpload ? ' • last upload ' + new Date(data.prusaLastUpload).toLocaleTimeString() : ''}`
+                            : 'registering…');
+            }
+
             // Rebuild the resolution dropdown from the device's detected
             // capabilities (the hardcoded options remain as a fallback).
             const resSel = document.getElementById('resolution');
@@ -669,6 +723,40 @@
                 await api(`/api/control/screen-timeout?enabled=${enabled}&seconds=${seconds}`);
                 log(`Screen timeout: ${enabled ? seconds + 's' : 'disabled'}`);
             } catch (e) { log(`Screen timeout: ${e.message}`, 'error'); }
+        }
+
+        async function setPrusaConnect() {
+            const enabled = document.getElementById('prusaEnabled').checked;
+            try {
+                await api(`/api/control/prusa-connect?enabled=${enabled}`);
+                log(`Prusa Connect: ${enabled ? 'on' : 'off'}`);
+                fetchStatus();
+            } catch (e) { log(`Prusa Connect: ${e.message}`, 'error'); }
+        }
+
+        async function setPrusaToken() {
+            const token = document.getElementById('prusaToken').value.trim();
+            try {
+                await api(`/api/control/prusa-token?token=${encodeURIComponent(token)}`);
+                log('Prusa token set');
+                fetchStatus();
+            } catch (e) { log(`Prusa token: ${e.message}`, 'error'); }
+        }
+
+        async function setPrusaName() {
+            const name = document.getElementById('prusaName').value.trim();
+            try {
+                await api(`/api/control/prusa-name?name=${encodeURIComponent(name)}`);
+                log(`Prusa camera name: ${name}`);
+            } catch (e) { log(`Prusa name: ${e.message}`, 'error'); }
+        }
+
+        async function setPrusaInterval() {
+            const seconds = parseInt(document.getElementById('prusaInterval').value, 10) || 30;
+            try {
+                await api(`/api/control/prusa-interval?seconds=${seconds}`);
+                log(`Prusa interval: ${seconds}s`);
+            } catch (e) { log(`Prusa interval: ${e.message}`, 'error'); }
         }
 
         // Restore saved token

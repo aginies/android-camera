@@ -16,9 +16,16 @@ class AppApplication : android.app.Application() {
             private set
 
         val deviceState: DeviceState by lazy { DeviceState() }
+
+        /** Max hold time for the CPU wake lock (2 hours). */
+        private const val WAKE_LOCK_TIMEOUT_MS = 2 * 60 * 60 * 1000L
     }
 
+    // Reference-counted: recording and Prusa Connect uploads can each hold
+    // the wake lock independently; the lock is released when the last holder
+    // lets go.
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wakeLockHolders = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -53,32 +60,34 @@ class AppApplication : android.app.Application() {
     }
 
     /**
-     * Acquire a CPU wake lock to keep recording while the screen is off.
+     * Acquire one reference to the CPU wake lock (keeps work running while
+     * the screen is off). Call [releaseWakeLock] for each acquisition.
      */
     fun acquireWakeLock() {
         if (wakeLock == null) {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
             wakeLock =
                 pm
-                    .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "androidcam:recording")
-                    .apply {
-                        setReferenceCounted(false)
-                        acquire(2 * 60 * 60 * 1000L) // max 2 hours
-                    }
-            Timber.d("Wake lock acquired")
+                    .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "androidcam:active")
+                    .apply { setReferenceCounted(true) }
         }
+        wakeLock?.acquire(WAKE_LOCK_TIMEOUT_MS)
+        wakeLockHolders++
+        Timber.d("Wake lock acquired (holders: $wakeLockHolders)")
     }
 
     /**
-     * Release the CPU wake lock.
+     * Release one reference to the CPU wake lock. The lock itself is released
+     * only when no holders remain.
      */
     fun releaseWakeLock() {
-        wakeLock?.let {
-            if (it.isHeld) {
-                it.release()
-                Timber.d("Wake lock released")
+        wakeLockHolders = (wakeLockHolders - 1).coerceAtLeast(0)
+        if (wakeLockHolders == 0) {
+            wakeLock?.let {
+                if (it.isHeld) it.release()
             }
+            wakeLock = null
+            Timber.d("Wake lock released")
         }
-        wakeLock = null
     }
 }

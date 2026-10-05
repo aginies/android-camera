@@ -2,6 +2,7 @@ package com.androidcam.stream
 
 import android.content.Context
 import com.androidcam.control.DeviceState
+import com.androidcam.prusa.PrusaConnectSettings
 import io.ktor.http.ContentType
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
@@ -105,6 +106,23 @@ class StreamServer(
         fun setStorageLocation(location: String): Boolean
 
         fun storageLocationName(): String
+
+        // --- Prusa Connect ---
+
+        /** Current Prusa Connect settings (for the UI). */
+        fun prusaSettings(): PrusaConnectSettings
+
+        /** Enable/disable Prusa Connect uploads. */
+        fun setPrusaEnabled(enabled: Boolean)
+
+        /** Set the Prusa Connect token. @return false if the token is invalid. */
+        fun setPrusaToken(token: String): Boolean
+
+        /** Set the camera name shown in Prusa Connect. */
+        fun setPrusaName(name: String)
+
+        /** Set the snapshot upload interval in seconds. */
+        fun setPrusaInterval(seconds: Int)
     }
 
     companion object {
@@ -130,6 +148,9 @@ class StreamServer(
     fun publishFrame(jpegBytes: ByteArray) {
         latestFrame.set(jpegBytes)
     }
+
+    /** Latest JPEG frame, or null while the camera is off. */
+    fun getLatestFrame(): ByteArray? = latestFrame.get()
 
     /** Get the device's local IPv4 address (site-local preferred). */
     fun getDeviceIp(): String {
@@ -390,6 +411,41 @@ class StreamServer(
                         control.setJpegQuality(quality)
                         call.respondText("JPEG quality: ${control.jpegQuality()}")
                     }
+
+                    post("/prusa-connect") {
+                        if (!authorized(call)) return@post unauthorized(call)
+                        val enabled = call.parameters["enabled"]?.toBooleanStrictOrNull() ?: false
+                        control.setPrusaEnabled(enabled)
+                        call.respondText("Prusa Connect: ${if (enabled) "on" else "off"}")
+                    }
+
+                    post("/prusa-token") {
+                        if (!authorized(call)) return@post unauthorized(call)
+                        val token = call.parameters["token"].orEmpty()
+                        if (control.setPrusaToken(token)) {
+                            call.respondText("Prusa token set")
+                        } else {
+                            call.respondText(
+                                "Invalid token (must be exactly 20 characters)",
+                                ContentType.Text.Plain,
+                                HttpStatusCode.BadRequest,
+                            )
+                        }
+                    }
+
+                    post("/prusa-name") {
+                        if (!authorized(call)) return@post unauthorized(call)
+                        val name = call.parameters["name"].orEmpty()
+                        control.setPrusaName(name)
+                        call.respondText("Prusa camera name: ${control.prusaSettings().cameraName}")
+                    }
+
+                    post("/prusa-interval") {
+                        if (!authorized(call)) return@post unauthorized(call)
+                        val seconds = call.parameters["seconds"]?.toIntOrNull() ?: 30
+                        control.setPrusaInterval(seconds)
+                        call.respondText("Prusa interval: ${control.prusaSettings().intervalSeconds}s")
+                    }
                 }
             }
         }
@@ -421,6 +477,13 @@ class StreamServer(
             put("timelapseProgress", deviceState.timelapseProgress)
             put("timestampEnabled", control.timestampEnabled())
             put("jpegQuality", control.jpegQuality())
+            put("prusaEnabled", deviceState.prusaState.enabled)
+            put("prusaRegistered", deviceState.prusaState.registered)
+            put("prusaLastUpload", deviceState.prusaState.lastUploadMs)
+            put("prusaError", deviceState.prusaState.error ?: "")
+            put("prusaToken", control.prusaSettings().token)
+            put("prusaName", control.prusaSettings().cameraName)
+            put("prusaInterval", control.prusaSettings().intervalSeconds)
             put("error", deviceState.lastError ?: "")
         }
 
@@ -555,6 +618,39 @@ class StreamServer(
                     buildJsonObject {
                         put("status", "ok")
                         put("jpegQuality", control.jpegQuality())
+                    }.toString()
+                }
+
+                "set_prusa_connect" -> {
+                    val enabled = cmd["enabled"]?.jsonPrimitive?.booleanOrNull ?: false
+                    control.setPrusaEnabled(enabled)
+                    ok("prusa_connect_set")
+                }
+
+                "set_prusa_token" -> {
+                    val token = cmd["token"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    if (control.setPrusaToken(token)) {
+                        ok("prusa_token_set")
+                    } else {
+                        errorJson("Invalid token (must be exactly 20 characters)")
+                    }
+                }
+
+                "set_prusa_name" -> {
+                    val name = cmd["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    control.setPrusaName(name)
+                    buildJsonObject {
+                        put("status", "ok")
+                        put("prusaName", control.prusaSettings().cameraName)
+                    }.toString()
+                }
+
+                "set_prusa_interval" -> {
+                    val seconds = cmd["seconds"]?.jsonPrimitive?.intOrNull ?: 30
+                    control.setPrusaInterval(seconds)
+                    buildJsonObject {
+                        put("status", "ok")
+                        put("prusaInterval", control.prusaSettings().intervalSeconds)
                     }.toString()
                 }
 

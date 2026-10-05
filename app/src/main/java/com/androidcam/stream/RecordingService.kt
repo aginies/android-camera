@@ -24,12 +24,17 @@ import androidx.camera.view.PreviewView
 import androidx.core.app.NotificationCompat
 import androidx.documentfile.provider.DocumentFile
 import com.androidcam.AppApplication
+import com.androidcam.BuildConfig
 import com.androidcam.R
 import com.androidcam.camera.CameraManager
 import com.androidcam.camera.FrameCapturer
 import com.androidcam.camera.ResolutionDetector
 import com.androidcam.control.DeviceState
 import com.androidcam.discovery.MdnsDiscovery
+import com.androidcam.prusa.PrusaCameraInfo
+import com.androidcam.prusa.PrusaConnectClient
+import com.androidcam.prusa.PrusaConnectSettings
+import com.androidcam.prusa.PrusaUploader
 import com.androidcam.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -73,6 +78,13 @@ class RecordingService :
         private const val KEY_RESOLUTION = "resolution"
         private const val KEY_CUSTOM_TREE_URI = "custom_tree_uri"
 
+        // Prusa Connect settings persistence
+        private const val KEY_PRUSA_ENABLED = "prusa_enabled"
+        private const val KEY_PRUSA_TOKEN = "prusa_token"
+        private const val KEY_PRUSA_FINGERPRINT = "prusa_fingerprint"
+        private const val KEY_PRUSA_NAME = "prusa_name"
+        private const val KEY_PRUSA_INTERVAL = "prusa_interval"
+
         /** Intent extra to set the auth token at runtime. */
         const val EXTRA_SET_TOKEN = "set_token"
 
@@ -110,6 +122,16 @@ class RecordingService :
     private var frameCapturer: FrameCapturer? = null
     private var streamServer: StreamServer? = null
     private var mdnsDiscovery: MdnsDiscovery? = null
+
+    // Prusa Connect: settings + upload loop (see prusa/ package).
+    private var prusaSettings = PrusaConnectSettings()
+    private var prusaClient: PrusaConnectClient? = null
+    private var prusaUploader: PrusaUploader? = null
+
+    // Whether this service currently holds a wake-lock reference for Prusa
+    // uploads (the wake lock itself is reference-counted in AppApplication).
+    @Volatile
+    private var prusaWakeLockHeld = false
 
     private var token: String = ""
     private var currentRecordingFile: File? = null
@@ -172,6 +194,7 @@ class RecordingService :
         cameraLifecycle.markStarted()
         startServerAndDiscovery()
         registerNetworkCallback()
+        startPrusaUploader()
         cleanupLeftoverFrames()
         refreshSupportedResolutions()
         updateNotification()
@@ -205,8 +228,30 @@ class RecordingService :
                 "SD" -> Quality.SD
                 else -> Quality.FHD
             }
+        // Prusa Connect: load settings; generate a stable fingerprint once.
+        val prusaFingerprint = prefs.getString(KEY_PRUSA_FINGERPRINT, "").orEmpty()
+        prusaSettings =
+            PrusaConnectSettings(
+                enabled = prefs.getBoolean(KEY_PRUSA_ENABLED, false),
+                token = prefs.getString(KEY_PRUSA_TOKEN, "").orEmpty(),
+                fingerprint =
+                    prusaFingerprint.ifEmpty {
+                        UUID
+                            .randomUUID()
+                            .toString()
+                            .replace("-", "")
+                            .also { prefs.edit().putString(KEY_PRUSA_FINGERPRINT, it).apply() }
+                    },
+                cameraName =
+                    prefs
+                        .getString(KEY_PRUSA_NAME, PrusaConnectSettings.DEFAULT_CAMERA_NAME)
+                        .orEmpty()
+                        .ifEmpty { PrusaConnectSettings.DEFAULT_CAMERA_NAME },
+                intervalSeconds =
+                    prefs.getInt(KEY_PRUSA_INTERVAL, PrusaConnectSettings.DEFAULT_INTERVAL_SECONDS),
+            )
         Timber.d(
-            "Settings loaded: token=${if (rawToken.isNullOrEmpty()) "generated" else "persisted"} interval=$intervalEnabled/${intervalSeconds}s storage=$storageLocation",
+            "Settings loaded: token=${if (rawToken.isNullOrEmpty()) "generated" else "persisted"} interval=$intervalEnabled/${intervalSeconds}s storage=$storageLocation prusa=${prusaSettings.enabled}",
         )
     }
 
@@ -844,6 +889,119 @@ class RecordingService :
 
     override fun storageLocationName(): String = storageLocation
 
+    // --- Prusa Connect ----------------------------------------------------------
+
+    /**
+     * Create the Prusa Connect client + uploader (once) and start the upload
+     * loop if the feature is enabled. The loop stays dormant while disabled,
+     * so a settings change from any entry point takes effect without a
+     * service restart.
+     */
+    private fun startPrusaUploader() {
+        if (prusaUploader == null) {
+            prusaClient = PrusaConnectClient { prusaSettings }
+            prusaUploader =
+                PrusaUploader(
+                    client = prusaClient!!,
+                    settingsProvider = { prusaSettings },
+                    latestFrameProvider = { streamServer?.getLatestFrame() },
+                    cameraInfoProvider = { cameraInfo() },
+                    onState = { deviceState.setPrusaState(it) },
+                    onFatal = { prusaReleaseWakeLock(); updateNotification() },
+                )
+        }
+        if (prusaSettings.enabled) {
+            prusaAcquireWakeLock()
+            prusaUploader?.start()
+        }
+        updateNotification()
+    }
+
+    /** Camera description sent to `PUT /c/info`. */
+    private fun cameraInfo(): PrusaCameraInfo {
+        val ip = streamServer?.getDeviceIp().orEmpty()
+        return PrusaCameraInfo(
+            name = prusaSettings.cameraName,
+            firmware = BuildConfig.VERSION_NAME,
+            manufacturer = "Android",
+            model = Build.MODEL,
+            width = deviceState.videoWidth,
+            height = deviceState.videoHeight,
+            wifiIpv4 = ip,
+        )
+    }
+
+    private fun prusaAcquireWakeLock() {
+        if (!prusaWakeLockHeld) {
+            AppApplication.instance.acquireWakeLock()
+            prusaWakeLockHeld = true
+        }
+    }
+
+    private fun prusaReleaseWakeLock() {
+        if (prusaWakeLockHeld) {
+            AppApplication.instance.releaseWakeLock()
+            prusaWakeLockHeld = false
+        }
+    }
+
+    /** Current Prusa Connect settings (for the UI). */
+    fun getPrusaSettings(): PrusaConnectSettings = prusaSettings
+
+    /** Current Prusa Connect settings (control API). */
+    override fun prusaSettings(): PrusaConnectSettings = prusaSettings
+
+    /** Enable/disable Prusa Connect uploads. */
+    override fun setPrusaEnabled(enabled: Boolean) {
+        prusaSettings = prusaSettings.copy(enabled = enabled)
+        prefs.edit().putBoolean(KEY_PRUSA_ENABLED, enabled).apply()
+        if (enabled) {
+            prusaAcquireWakeLock()
+            prusaUploader?.start()
+        } else {
+            prusaUploader?.stop()
+            prusaReleaseWakeLock()
+        }
+        deviceState.setPrusaState(deviceState.prusaState.copy(enabled = enabled))
+        updateNotification()
+        Timber.i("Prusa Connect: ${if (enabled) "enabled" else "disabled"}")
+    }
+
+    /**
+     * Set the Prusa Connect token (20 chars, from the Prusa Connect app/web).
+     * @return false if the token is not exactly [PrusaConnectSettings.TOKEN_LENGTH] chars.
+     */
+    override fun setPrusaToken(token: String): Boolean {
+        val trimmed = token.trim()
+        if (!PrusaConnectSettings.isValidToken(trimmed)) return false
+        prusaSettings = prusaSettings.copy(token = trimmed)
+        prefs.edit().putString(KEY_PRUSA_TOKEN, trimmed).apply()
+        prusaUploader?.markInfoStale()
+        // Resumes the loop if it had stopped on an invalid token.
+        if (prusaSettings.enabled) prusaUploader?.start()
+        Timber.i("Prusa Connect token updated")
+        return true
+    }
+
+    /** Set the camera name shown in Prusa Connect (max 64 chars). */
+    override fun setPrusaName(name: String) {
+        val trimmed =
+            name.trim().take(PrusaConnectSettings.NAME_MAX_LENGTH)
+                .ifEmpty { PrusaConnectSettings.DEFAULT_CAMERA_NAME }
+        prusaSettings = prusaSettings.copy(cameraName = trimmed)
+        prefs.edit().putString(KEY_PRUSA_NAME, trimmed).apply()
+        prusaUploader?.markInfoStale()
+        Timber.i("Prusa Connect camera name: $trimmed")
+    }
+
+    /** Set the snapshot upload interval in seconds (clamped to 5-3600). */
+    override fun setPrusaInterval(seconds: Int) {
+        val clamped = seconds.coerceIn(5, 3600)
+        prusaSettings = prusaSettings.copy(intervalSeconds = clamped)
+        prefs.edit().putInt(KEY_PRUSA_INTERVAL, clamped).apply()
+        Timber.i("Prusa Connect interval: ${clamped}s")
+    }
+
     /** The directory recordings are written to, based on [storageLocation]. */
     private fun videosDir(): File =
         if (storageLocation == STORAGE_EXTERNAL) {
@@ -855,6 +1013,11 @@ class RecordingService :
     override fun onDestroy() {
         stopStreaming()
         unregisterNetworkCallback()
+        prusaUploader?.release()
+        prusaUploader = null
+        prusaClient?.close()
+        prusaClient = null
+        prusaReleaseWakeLock()
         stopServerAndDiscovery()
         cameraLifecycle.markDestroyed()
         encodeScope.cancel()
@@ -878,6 +1041,9 @@ class RecordingService :
 
                 override fun onAvailable(network: Network) {
                     refreshStreamUrl()
+                    // The LAN address may have changed: re-send the camera
+                    // info so Prusa Connect shows the current address.
+                    prusaUploader?.markInfoStale()
                 }
             }
         try {
@@ -948,12 +1114,18 @@ class RecordingService :
         val ip = server.getDeviceIp()
         val url = "http://$ip:${deviceState.streamPort}/?token=$token"
         val recording = deviceState.recordingState == DeviceState.RecordingState.RECORDING
+        val prusa =
+            if (deviceState.prusaState.enabled) {
+                if (deviceState.prusaState.error != null) " • Prusa ⚠" else " • Prusa ✓"
+            } else {
+                ""
+            }
         val sub =
             when {
-                recording && timelapseOnlyRecording -> "Timelapse • $url"
-                recording -> "Recording • $url"
-                deviceState.isStreaming -> "Streaming • $url"
-                else -> "Camera off • $url"
+                recording && timelapseOnlyRecording -> "Timelapse • $url$prusa"
+                recording -> "Recording • $url$prusa"
+                deviceState.isStreaming -> "Streaming • $url$prusa"
+                else -> "Camera off • $url$prusa"
             }
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
             .notify(NOTIFICATION_ID, buildNotification(sub))

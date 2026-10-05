@@ -7,6 +7,8 @@ H.264 MP4 video, and offers remote control via a token-protected web UI.
 
 - **Live MJPEG stream** (~10 fps, 720p) served over HTTP
 - **MP4 video recording** (H.264, hardware-encoded via CameraX `VideoCapture`)
+- **Prusa Connect camera** — register the phone as a camera on a Prusa
+  printer and upload snapshots every 10/30/60 s
 - **Remote control** via web UI (any browser on the same network)
 - **Token auth** — every endpoint requires a per-run token (shown in the app
   notification, logcat, and the mDNS advertisement)
@@ -121,6 +123,10 @@ All endpoints except `GET /health` require `?token=<token>`.
 | `/api/control/toggle-torch` | POST | Toggle torch |
 | `/api/control/resolution/{res}` | POST | Set recording resolution (`1920x1080`, `1280x720`, `640x480`) |
 | `/api/control/screen-timeout?enabled={bool}&seconds={n}` | POST | Set screen timeout |
+| `/api/control/prusa-connect?enabled={bool}` | POST | Enable/disable Prusa Connect uploads |
+| `/api/control/prusa-token?token={20ch}` | POST | Set the Prusa Connect camera token |
+| `/api/control/prusa-name?name={name}` | POST | Set the camera name shown in Connect |
+| `/api/control/prusa-interval?seconds={n}` | POST | Set the snapshot upload interval (5-3600 s) |
 
 ### WebSocket
 
@@ -136,6 +142,10 @@ receive JSON responses:
 {"action": "toggle_torch"}
 {"action": "set_resolution", "resolution": "1280x720"}
 {"action": "set_screen_timeout", "enabled": true, "seconds": 30}
+{"action": "set_prusa_connect", "enabled": true}
+{"action": "set_prusa_token", "token": "<20-char token>"}
+{"action": "set_prusa_name", "name": "Bench cam"}
+{"action": "set_prusa_interval", "seconds": 30}
 {"action": "get_status"}
 ```
 
@@ -164,6 +174,35 @@ While recording, the screen stays on for `screenTimeoutSeconds` (default 30,
 configurable from the web UI or WebSocket) after the last touch, then turns
 off. A CPU wake lock keeps the camera and encoder running. Touching the
 preview resets the timer.
+
+## Prusa Connect
+
+The app can act as a live camera on [Prusa Connect](https://connect.prusa3d.com)
+for any printer. Connect cameras are snapshot devices: the app registers itself
+with `PUT /c/info` and uploads the latest stream frame with `PUT /c/snapshot`
+every N seconds (default 30) — the same protocol Prusa's own ESP32 camera
+firmware uses. The MJPEG web UI stays available for real-time viewing.
+
+Setup:
+
+1. In Prusa Connect (web or app): open your printer → Cameras → **Add camera**.
+   Connect generates a **20-character token** (a QR code is also shown).
+2. In AndroidCam: Settings → **Prusa Connect camera** → enable the switch,
+   enter the token, optionally set the camera name and snapshot interval
+   (10/30/60/120 s), then Save. The same controls exist in the web UI.
+3. Keep the camera **streaming** — while the camera is off there are no
+   frames to upload and Connect shows the camera as offline. A wake lock
+   keeps uploads running with the screen off.
+
+Notes:
+
+- The token is bound to the printer you added the camera to. If you delete
+  the camera in Connect, the token stops working (401/403) and the app shows
+  an error — add the camera again and save the new token.
+- The `Fingerprint` header is a stable per-device ID generated on first run
+  and persisted.
+- The backend hostname defaults to `connect.prusa3d.com` (self-hosted
+  instances can be used by changing `PrusaConnectSettings.DEFAULT_HOSTNAME`).
 
 ## Security Notes
 

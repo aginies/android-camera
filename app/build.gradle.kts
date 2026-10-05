@@ -96,6 +96,9 @@ dependencies {
     implementation("io.ktor:ktor-websockets:$ktorVersion")
     implementation("io.ktor:ktor-server-cors:$ktorVersion")
 
+    // Ktor client (Prusa Connect uploads)
+    implementation("io.ktor:ktor-client-cio:$ktorVersion")
+
     // mDNS discovery
     implementation("org.jmdns:jmdns:3.6.0")
 

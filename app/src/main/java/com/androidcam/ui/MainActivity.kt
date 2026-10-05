@@ -354,6 +354,20 @@ class MainActivity : AppCompatActivity() {
             pickDirectoryLauncher.launch(null)
         }
 
+        // Prusa Connect section
+        val prusa = svc.getPrusaSettings()
+        db.prusaSwitch.isChecked = prusa.enabled
+        db.prusaTokenInput.setText(prusa.token)
+        db.prusaNameInput.setText(prusa.cameraName)
+        val prusaIntervals = listOf(10, 30, 60, 120)
+        db.prusaIntervalSpinner.adapter =
+            ArrayAdapter(this, android.R.layout.simple_spinner_item, prusaIntervals.map { "$it s" })
+                .also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+        db.prusaIntervalSpinner.setSelection(
+            prusaIntervals.indexOf(prusa.intervalSeconds).coerceAtLeast(0),
+        )
+        db.prusaStatusText.text = prusaStatusText()
+
         AlertDialog
             .Builder(this)
             .setTitle(R.string.settings_title)
@@ -390,7 +404,45 @@ class MainActivity : AppCompatActivity() {
                 else -> RecordingService.STORAGE_INTERNAL
             }
         svc.setStorageLocation(storage)
+
+        // Prusa Connect: apply token/name/interval first so the upload loop
+        // starts with the new settings when it is enabled.
+        val prusaToken = db.prusaTokenInput.text.toString().trim()
+        if (prusaToken.isNotEmpty() && !svc.setPrusaToken(prusaToken)) {
+            Toast.makeText(this, R.string.settings_prusa_token_invalid, Toast.LENGTH_LONG).show()
+            return
+        }
+        svc.setPrusaName(db.prusaNameInput.text.toString())
+        val prusaInterval =
+            (db.prusaIntervalSpinner.selectedItem as? String)
+                ?.substringBefore(" ")
+                ?.toIntOrNull()
+                ?: 30
+        svc.setPrusaInterval(prusaInterval)
+        svc.setPrusaEnabled(db.prusaSwitch.isChecked)
         Toast.makeText(this, R.string.settings_saved, Toast.LENGTH_SHORT).show()
+    }
+
+    /** One-line Prusa Connect status for the settings dialog. */
+    private fun prusaStatusText(): String {
+        val s = deviceState.prusaState
+        return when {
+            !s.enabled -> getString(R.string.settings_prusa_disabled)
+            s.error != null -> s.error
+            s.registered -> {
+                val base = getString(R.string.settings_prusa_registered)
+                if (s.lastUploadMs > 0) {
+                    val time =
+                        java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+                            .format(java.util.Date(s.lastUploadMs))
+                    "$base • ${getString(R.string.settings_prusa_last_upload, time)}"
+                } else {
+                    base
+                }
+            }
+
+            else -> getString(R.string.settings_prusa_registering)
+        }
     }
 
     private fun onRecordingStateChanged(state: DeviceState.RecordingState) {

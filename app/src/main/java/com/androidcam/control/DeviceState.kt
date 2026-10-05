@@ -1,5 +1,6 @@
 package com.androidcam.control
 
+import com.androidcam.prusa.PrusaState
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -286,6 +287,28 @@ class DeviceState {
         set(value) {
             _timestampEnabled.set(value)
         }
+
+    // --- Prusa Connect ---------------------------------------------------------
+
+    // Live status of the Prusa Connect link (published by the uploader loop).
+    private val _prusaState = AtomicReference(PrusaState())
+    val prusaState: PrusaState get() = _prusaState.get()
+
+    private val prusaStateListeners = CopyOnWriteArrayList<(PrusaState) -> Unit>()
+
+    /** Set the Prusa Connect status and notify listeners (skipped if unchanged). */
+    fun setPrusaState(state: PrusaState) {
+        if (_prusaState.getAndSet(state) == state) return
+        prusaStateListeners.forEach { it(state) }
+    }
+
+    fun addPrusaStateListener(listener: (PrusaState) -> Unit) {
+        prusaStateListeners.add(listener)
+    }
+
+    fun removePrusaStateListener(listener: (PrusaState) -> Unit) {
+        prusaStateListeners.remove(listener)
+    }
 
     // --- Screen timeout ---------------------------------------------------------
 

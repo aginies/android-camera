@@ -31,6 +31,17 @@
     <string name="settings_storage_custom">Custom (choose folder)</string>
     <string name="settings_select_dir">Choose folder…</string>
     <string name="settings_dir_selected">Recording folder updated</string>
+    <string name="settings_prusa_title">Prusa Connect camera</string>
+    <string name="settings_prusa_token_label">Prusa token</string>
+    <string name="settings_prusa_token_hint">20-character token from Prusa Connect</string>
+    <string name="settings_prusa_name_label">Camera name</string>
+    <string name="settings_prusa_name_hint">Name shown in Prusa Connect</string>
+    <string name="settings_prusa_interval_label">Snapshot interval</string>
+    <string name="settings_prusa_token_invalid">Prusa token must be exactly 20 characters</string>
+    <string name="settings_prusa_disabled">Disabled</string>
+    <string name="settings_prusa_registering">Registering…</string>
+    <string name="settings_prusa_registered">Registered</string>
+    <string name="settings_prusa_last_upload">Last upload %1$s</string>
     <string name="settings_save">Save</string>
     <string name="settings_cancel">Cancel</string>
     <string name="settings_saved">Settings saved</string>
