@@ -377,6 +377,25 @@ class MainActivity : AppCompatActivity() {
             prusaIntervals.indexOf(prusa.intervalSeconds).coerceAtLeast(0),
         )
         db.prusaStatusText.text = prusaStatusText()
+
+        // QR scan: fill the token field from the Prusa Connect registration QR.
+        db.scanPrusaQrButton.setOnClickListener {
+            db.scanPrusaQrButton.isEnabled = false
+            db.scanPrusaQrButton.text = getString(R.string.settings_prusa_qr_scanning)
+            svc.startPrusaQrScan { token ->
+                runOnUiThread {
+                    db.scanPrusaQrButton.isEnabled = true
+                    db.scanPrusaQrButton.text = getString(R.string.settings_prusa_scan_qr)
+                    if (token != null) {
+                        db.prusaTokenInput.setText(token)
+                        Toast.makeText(this, R.string.settings_prusa_qr_found, Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(this, R.string.settings_prusa_qr_timeout, Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        }
+
         // Keep the status line live while the dialog is open.
         val prusaStatusListener: (PrusaState) -> Unit = {
             db.prusaStatusText.post { db.prusaStatusText.text = prusaStatusText() }
@@ -391,7 +410,10 @@ class MainActivity : AppCompatActivity() {
                 .setPositiveButton(R.string.settings_save) { _, _ -> applySettings(svc, db) }
                 .setNegativeButton(R.string.settings_cancel, null)
                 .show()
-        dialog.setOnDismissListener { deviceState.removePrusaStateListener(prusaStatusListener) }
+        dialog.setOnDismissListener {
+            deviceState.removePrusaStateListener(prusaStatusListener)
+            svc.stopPrusaQrScan()
+        }
     }
 
     private fun applySettings(

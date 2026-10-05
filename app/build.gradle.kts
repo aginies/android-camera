@@ -102,6 +102,9 @@ dependencies {
     // mDNS discovery
     implementation("org.jmdns:jmdns:3.6.0")
 
+    // On-device QR scanning (Prusa Connect registration token)
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
+
     // Timber for structured logging
     implementation("com.jakewharton.timber:timber:5.0.1")
 

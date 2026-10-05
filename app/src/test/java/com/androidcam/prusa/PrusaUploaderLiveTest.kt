@@ -1,6 +1,7 @@
 package com.androidcam.prusa
 
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import timber.log.Timber
 import java.util.Base64
@@ -9,14 +10,23 @@ import java.util.Base64
  * Live round-trip test against the real Prusa Connect API.
  *
  * Runs the actual [PrusaUploader] loop on the JVM: registers the camera
- * (`PUT /c/info`) and uploads one snapshot (`PUT /c/snapshot`) with the
- * project's test token. Requires network access — run manually, not in CI:
+ * (`PUT /c/info`) and uploads one snapshot (`PUT /c/snapshot`). Requires
+ * network access and a valid token — opt-in, not part of the default test
+ * run:
  *
- *     ./gradlew :app:testDebugUnitTest --tests "com.androidcam.prusa.PrusaUploaderLiveTest"
+ *     PRUSA_LIVE_TEST=1 ./gradlew :app:testDebugUnitTest \
+ *         --tests "com.androidcam.prusa.PrusaUploaderLiveTest"
+ *
+ * Token/fingerprint can be overridden with `PRUSA_TEST_TOKEN` /
+ * `PRUSA_TEST_FINGERPRINT` (the defaults are a throwaway test camera).
  */
 class PrusaUploaderLiveTest {
     @Test
     fun liveRegisterAndUpload() {
+        assumeTrue(
+            "Set PRUSA_LIVE_TEST=1 to run the live Prusa Connect round-trip test",
+            System.getenv("PRUSA_LIVE_TEST") == "1",
+        )
         Timber.plant(
             object : Timber.Tree() {
                 override fun log(
@@ -36,11 +46,11 @@ class PrusaUploaderLiveTest {
         val settings =
             PrusaConnectSettings(
                 enabled = true,
-                token = "j7VrJaOcw3bizJ5vqlwY",
+                token = System.getenv("PRUSA_TEST_TOKEN") ?: "j7VrJaOcw3bizJ5vqlwY",
                 // Prusa Connect binds a token to the FIRST fingerprint that
                 // registers it. This token was bound to this fingerprint by
                 // the curl protocol test — a different fingerprint gets 403.
-                fingerprint = "androidcam-test-0000001",
+                fingerprint = System.getenv("PRUSA_TEST_FINGERPRINT") ?: "androidcam-test-0000001",
                 cameraName = "AndroidCam-JVM-Test",
                 intervalSeconds = 10,
             )

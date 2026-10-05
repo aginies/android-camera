@@ -1,6 +1,8 @@
 package com.androidcam.stream
 
 import android.content.Context
+import android.util.Base64
+import com.androidcam.BuildConfig
 import com.androidcam.control.DeviceState
 import com.androidcam.prusa.PrusaConnectSettings
 import io.ktor.http.ContentType
@@ -123,6 +125,9 @@ class StreamServer(
 
         /** Set the snapshot upload interval in seconds. */
         fun setPrusaInterval(seconds: Int)
+
+        /** Start a 30 s QR scan; a found token is set automatically. */
+        fun startPrusaQrScan()
     }
 
     companion object {
@@ -144,13 +149,22 @@ class StreamServer(
     /** Latest JPEG frame; the MJPEG endpoint writes it when it changes. */
     private val latestFrame = AtomicReference<ByteArray?>(null)
 
+    /** Debug only: frame override so the capture pipeline (e.g. QR scan) can be tested without a camera. */
+    private var debugFrame: ByteArray? = null
+
     /** Publish a new JPEG frame to the MJPEG stream. */
     fun publishFrame(jpegBytes: ByteArray) {
         latestFrame.set(jpegBytes)
     }
 
+    /** Inject (or clear with empty string) a debug frame override. No-op in release builds. */
+    fun injectDebugFrame(base64: String) {
+        if (!BuildConfig.DEBUG) return
+        debugFrame = if (base64.isEmpty()) null else Base64.decode(base64, Base64.DEFAULT)
+    }
+
     /** Latest JPEG frame, or null while the camera is off. */
-    fun getLatestFrame(): ByteArray? = latestFrame.get()
+    fun getLatestFrame(): ByteArray? = debugFrame ?: latestFrame.get()
 
     /** Get the device's local IPv4 address (site-local preferred). */
     fun getDeviceIp(): String {
@@ -655,6 +669,20 @@ class StreamServer(
                         put("status", "ok")
                         put("prusaInterval", control.prusaSettings().intervalSeconds)
                     }.toString()
+                }
+
+                "start_prusa_qr_scan" -> {
+                    control.startPrusaQrScan()
+                    ok("qr_scan_started")
+                }
+
+                "inject_test_frame" -> {
+                    if (BuildConfig.DEBUG) {
+                        injectDebugFrame(cmd["frame"]?.jsonPrimitive?.contentOrNull.orEmpty())
+                        ok("frame_injected")
+                    } else {
+                        errorJson("Debug-only action")
+                    }
                 }
 
                 "get_status" -> {

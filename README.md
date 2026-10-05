@@ -8,7 +8,8 @@ H.264 MP4 video, and offers remote control via a token-protected web UI.
 - **Live MJPEG stream** (~10 fps, 720p) served over HTTP
 - **MP4 video recording** (H.264, hardware-encoded via CameraX `VideoCapture`)
 - **Prusa Connect camera** — register the phone as a camera on a Prusa
-  printer and upload snapshots every 10/30/60 s
+  printer and upload snapshots every 10/30/60 s (token by hand or by
+  scanning the QR code)
 - **Remote control** via web UI (any browser on the same network)
 - **Token auth** — every endpoint requires a per-run token (shown in the app
   notification, logcat, and the mDNS advertisement)
@@ -103,7 +104,8 @@ app/src/main/java/com/androidcam/
 ├── prusa/
 │   ├── PrusaConnectClient.kt  # HTTP client for /c/info + /c/snapshot
 │   ├── PrusaConnectSettings.kt# Token/fingerprint/interval settings
-│   └── PrusaUploader.kt       # Snapshot upload loop (crash-proof)
+│   ├── PrusaUploader.kt       # Snapshot upload loop (crash-proof)
+│   └── QrTokenParser.kt       # Extracts the 20-char token from QR payloads
 ├── stream/
 │   ├── RecordingService.kt    # Foreground service owning the pipeline
 │   └── StreamServer.kt        # Ktor HTTP/WebSocket server
@@ -165,8 +167,14 @@ receive JSON responses:
 {"action": "set_prusa_token", "token": "<20-char token>"}
 {"action": "set_prusa_name", "name": "Bench cam"}
 {"action": "set_prusa_interval", "seconds": 30}
+{"action": "start_prusa_qr_scan"}
 {"action": "get_status"}
 ```
+
+`start_prusa_qr_scan` runs a 30 s scan of the stream frames for a QR code
+containing a Prusa Connect token (ML Kit barcode scanning); a found token is
+set automatically. `inject_test_frame` (debug builds only) overrides the
+frame the pipeline sees, for testing without a camera.
 
 ### MJPEG
 
@@ -213,6 +221,18 @@ Setup:
    frames to upload and Connect shows the camera as offline. A wake lock
    keeps uploads running with the screen off.
 
+### Scanning the QR code
+
+Instead of typing the token, point the camera at the QR code shown by Prusa
+Connect and press **Scan QR code** in the settings dialog (or send
+`start_prusa_qr_scan` over WebSocket). The app scans the live stream frames
+with ML Kit barcode scanning for up to 30 s — no second camera session is
+needed, the same frames that feed the MJPEG stream are analyzed. The parser
+accepts a bare 20-character token or a URL/JSON payload containing it
+(`?token=...`, a `/token/...` path segment, or a `"token"` field), so it
+works regardless of the exact QR payload format Connect uses. A found token
+is filled into the token field (dialog) or set directly (WebSocket).
+
 Notes:
 
 - The token is bound to the **first device fingerprint** that successfully
@@ -231,14 +251,17 @@ Diagnostics:
   request with fingerprint, byte counts, HTTP status and response body, plus
   upload success/failure lines from the uploader loop.
 - A live JVM round-trip test runs the real uploader loop against
-  `connect.prusa3d.com`:
+  `connect.prusa3d.com` (opt-in, skipped in the default test run):
 
   ```bash
-  ./gradlew :app:testDebugUnitTest --tests "com.androidcam.prusa.PrusaUploaderLiveTest"
+  PRUSA_LIVE_TEST=1 ./gradlew :app:testDebugUnitTest \
+      --tests "com.androidcam.prusa.PrusaUploaderLiveTest"
   ```
 
-  It needs a valid token and **binds that token to the test's fingerprint** —
-  use a throwaway camera entry, not the one your phone is using.
+  It needs a valid token (override with `PRUSA_TEST_TOKEN`, and
+  `PRUSA_TEST_FINGERPRINT` if the token is bound to a custom fingerprint)
+  and **binds that token to the test's fingerprint** — use a throwaway
+  camera entry, not the one your phone is using.
 
 ## Security Notes
 

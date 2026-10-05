@@ -9,6 +9,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.MediaMuxer
 import android.net.ConnectivityManager
 import android.net.Network
@@ -35,12 +37,23 @@ import com.androidcam.prusa.PrusaCameraInfo
 import com.androidcam.prusa.PrusaConnectClient
 import com.androidcam.prusa.PrusaConnectSettings
 import com.androidcam.prusa.PrusaUploader
+import com.androidcam.prusa.QrTokenParser
 import com.androidcam.ui.MainActivity
+import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.BarcodeScanner
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.barcode.common.Barcode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.File
 import java.net.InetAddress
@@ -84,6 +97,10 @@ class RecordingService :
         private const val KEY_PRUSA_FINGERPRINT = "prusa_fingerprint"
         private const val KEY_PRUSA_NAME = "prusa_name"
         private const val KEY_PRUSA_INTERVAL = "prusa_interval"
+
+        // Prusa QR scan
+        private const val QR_SCAN_TIMEOUT_MS = 30_000L
+        private const val QR_SCAN_PERIOD_MS = 250L
 
         /** Intent extra to set the auth token at runtime. */
         const val EXTRA_SET_TOKEN = "set_token"
@@ -132,6 +149,10 @@ class RecordingService :
     // uploads (the wake lock itself is reference-counted in AppApplication).
     @Volatile
     private var prusaWakeLockHeld = false
+
+    // Prusa QR scan: one active scan job + a shared ML Kit scanner.
+    private var qrScanJob: Job? = null
+    private var qrScanner: BarcodeScanner? = null
 
     private var token: String = ""
     private var currentRecordingFile: File? = null
@@ -1007,6 +1028,98 @@ class RecordingService :
         Timber.i("Prusa Connect interval: ${clamped}s")
     }
 
+    /** WS-triggered scan: a found token is set automatically. */
+    override fun startPrusaQrScan() {
+        startPrusaQrScan { token ->
+            if (token != null) {
+                setPrusaToken(token)
+                Timber.i("Prusa QR scan (WS): token found and set")
+            } else {
+                Timber.i("Prusa QR scan (WS): no token found")
+            }
+        }
+    }
+
+    // --- Prusa QR scan ---------------------------------------------------------
+
+    /**
+     * Scan stream frames for a QR code containing a Prusa Connect token.
+     * The camera is turned on automatically if it is off (frames are the scan
+     * source — no second camera session needed).
+     *
+     * @param onResult invoked on the main thread with the extracted token, or
+     *   null if no QR with a token was found within the timeout.
+     */
+    fun startPrusaQrScan(onResult: (String?) -> Unit) {
+        stopPrusaQrScan()
+        val scanner =
+            qrScanner
+                ?: BarcodeScanning
+                    .getClient(
+                        BarcodeScannerOptions.Builder()
+                            .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                            .build(),
+                    )
+                    .also { qrScanner = it }
+        if (!deviceState.isStreaming) {
+            Timber.i("Prusa QR scan: camera off — starting streaming")
+            startStreaming()
+        }
+        qrScanJob =
+            encodeScope.launch {
+                val deadline = System.currentTimeMillis() + QR_SCAN_TIMEOUT_MS
+                var token: String? = null
+                while (isActive && token == null && System.currentTimeMillis() < deadline) {
+                    val frame = streamServer?.getLatestFrame()
+                    if (frame != null) {
+                        val bitmap = BitmapFactory.decodeByteArray(frame, 0, frame.size)
+                        if (bitmap != null) {
+                            try {
+                                for (barcode in scanQr(scanner, bitmap)) {
+                                    val t = QrTokenParser.extractToken(barcode.rawValue.orEmpty())
+                                    if (t != null) {
+                                        token = t
+                                        break
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                Timber.w(e, "Prusa QR scan: frame failed")
+                            } finally {
+                                bitmap.recycle()
+                            }
+                        }
+                    }
+                    delay(QR_SCAN_PERIOD_MS)
+                }
+                Timber.i("Prusa QR scan: ${if (token != null) "token found" else "timeout"}")
+                withContext(Dispatchers.Main) { onResult(token) }
+            }
+    }
+
+    /** Cancel an in-flight QR scan, if any. */
+    fun stopPrusaQrScan() {
+        qrScanJob?.cancel()
+        qrScanJob = null
+    }
+
+    /** Run the ML Kit QR scanner on one frame (Task → suspend bridge). */
+    private suspend fun scanQr(
+        scanner: BarcodeScanner,
+        bitmap: Bitmap,
+    ): List<Barcode> =
+        suspendCancellableCoroutine { cont ->
+            val task: com.google.android.gms.tasks.Task<List<Barcode>> =
+                scanner.process(InputImage.fromBitmap(bitmap, 0))
+            task.addOnCompleteListener { result ->
+                if (cont.isCancelled) return@addOnCompleteListener
+                if (result.isSuccessful) {
+                    cont.resumeWith(Result.success(result.result))
+                } else {
+                    cont.resumeWith(Result.failure(requireNotNull(result.exception)))
+                }
+            }
+        }
+
     /** The directory recordings are written to, based on [storageLocation]. */
     private fun videosDir(): File =
         if (storageLocation == STORAGE_EXTERNAL) {
@@ -1017,6 +1130,9 @@ class RecordingService :
 
     override fun onDestroy() {
         stopStreaming()
+        stopPrusaQrScan()
+        qrScanner?.close()
+        qrScanner = null
         unregisterNetworkCallback()
         prusaUploader?.release()
         prusaUploader = null
