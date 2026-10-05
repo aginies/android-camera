@@ -124,7 +124,7 @@ All endpoints except `GET /health` require `?token=<token>`.
 | `/api/control/resolution/{res}` | POST | Set recording resolution (`1920x1080`, `1280x720`, `640x480`) |
 | `/api/control/screen-timeout?enabled={bool}&seconds={n}` | POST | Set screen timeout |
 | `/api/control/prusa-connect?enabled={bool}` | POST | Enable/disable Prusa Connect uploads |
-| `/api/control/prusa-token?token={20ch}` | POST | Set the Prusa Connect camera token |
+| `/api/control/prusa-token?value={20ch}` | POST | Set the Prusa Connect camera token |
 | `/api/control/prusa-name?name={name}` | POST | Set the camera name shown in Connect |
 | `/api/control/prusa-interval?seconds={n}` | POST | Set the snapshot upload interval (5-3600 s) |
 

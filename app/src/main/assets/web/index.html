@@ -714,7 +714,7 @@
         async function setPrusaToken() {
             const token = document.getElementById('prusaToken').value.trim();
             try {
-                await api(`/api/control/prusa-token?token=${encodeURIComponent(token)}`);
+                await api(`/api/control/prusa-token?value=${encodeURIComponent(token)}`);
                 log('Prusa token set');
                 fetchStatus();
             } catch (e) { log(`Prusa token: ${e.message}`, 'error'); }

@@ -421,7 +421,10 @@ class StreamServer(
 
                     post("/prusa-token") {
                         if (!authorized(call)) return@post unauthorized(call)
-                        val token = call.parameters["token"].orEmpty()
+                        // "value", not "token": the auth check already uses the
+                        // "token" query param, so a second "token" param would
+                        // shadow it and every request would 401.
+                        val token = call.parameters["value"].orEmpty()
                         if (control.setPrusaToken(token)) {
                             call.respondText("Prusa token set")
                         } else {
