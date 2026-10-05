@@ -22,7 +22,7 @@
     <string name="settings_interval_title">Timelapse (interval capture)</string>
     <string name="settings_interval_label">Interval (seconds)</string>
     <string name="settings_interval_hint">While recording, capture one photo every N seconds; a timelapse video is created when the recording stops (photos are deleted afterwards)</string>
-    <string name="settings_timestamp_title">Timestamp on timelapse frames</string>
+    <string name="settings_timestamp_title">Timestamp on frames (live view + timelapse)</string>
     <string name="settings_jpeg_label">JPEG quality (stream)</string>
     <string name="settings_storage_label">Video storage</string>
     <string name="settings_storage_internal">Internal (app)</string>

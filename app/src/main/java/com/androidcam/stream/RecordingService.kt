@@ -376,7 +376,6 @@ class RecordingService :
             TimelapseCapture(
                 framesDir(),
                 intervalSeconds.toLong() * 1000L,
-                { deviceState.timestampEnabled },
             ) {
                 deviceState.addTimelapseFrame()
             }.also {

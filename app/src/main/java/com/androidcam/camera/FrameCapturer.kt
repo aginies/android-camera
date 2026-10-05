@@ -2,8 +2,11 @@ package com.androidcam.camera
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.ImageFormat
 import android.graphics.Matrix
+import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.YuvImage
 import androidx.camera.core.ImageAnalysis
@@ -11,9 +14,13 @@ import androidx.camera.core.ImageProxy
 import com.androidcam.control.DeviceState
 import timber.log.Timber
 import java.io.ByteArrayOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.ceil
 
 /**
  * Converts camera frames (YUV_420_888 from [ImageAnalysis]) into JPEG bytes for
@@ -21,6 +28,9 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * Frames are throttled to roughly [MIN_FRAME_INTERVAL_NS] apart and rotated
  * according to [DeviceState.rotationDegrees] before being handed to [onFrame].
+ * When [DeviceState.timestampEnabled] is set, a date/time stamp is burned in
+ * (bottom-left) on every frame, so the live view and the timelapse frames
+ * captured from this feed both show it.
  */
 class FrameCapturer(
     private val deviceState: DeviceState,
@@ -29,12 +39,19 @@ class FrameCapturer(
     companion object {
         /** Minimum time between processed frames (~10 fps stream rate). */
         private const val MIN_FRAME_INTERVAL_NS = 100_000_000L
+        private val TIMESTAMP_FORMAT = SimpleDateFormat("yyyy-MM-dd  HH:mm:ss", Locale.US)
     }
 
     /** Single-thread executor the [ImageAnalysis] use case delivers frames on. */
     val executor: Executor = Executors.newSingleThreadExecutor()
 
     private val lastFrameNanos = AtomicLong(0)
+
+    // Cached timestamp text bitmap; re-rasterized only when the displayed
+    // second (or the frame height) changes, not on every frame.
+    private var textBitmap: Bitmap? = null
+    private var textBitmapSecond = 0L
+    private var textBitmapHeight = 0
 
     override fun analyze(imageProxy: ImageProxy) {
         try {
@@ -44,7 +61,12 @@ class FrameCapturer(
 
             val jpeg = imageProxyToJpeg(imageProxy)
             val rotation = deviceState.rotationDegrees % 360
-            val frame = if (rotation == 0) jpeg else rotateJpeg(jpeg, rotation)
+            val frame =
+                when {
+                    rotation == 0 && deviceState.timestampEnabled -> overlayTimestamp(jpeg)
+                    rotation == 0 -> jpeg
+                    else -> rotateJpeg(jpeg, rotation)
+                }
             onFrame(frame)
         } catch (e: Exception) {
             Timber.e(e, "Frame processing failed")
@@ -111,7 +133,7 @@ class FrameCapturer(
         return out.toByteArray()
     }
 
-    /** Rotate a JPEG by [degrees] (90/180/270). */
+    /** Rotate a JPEG by [degrees] (90/180/270), stamping the timestamp if enabled. */
     private fun rotateJpeg(
         jpeg: ByteArray,
         degrees: Int,
@@ -120,9 +142,59 @@ class FrameCapturer(
         val matrix = Matrix().apply { postRotate(degrees.toFloat()) }
         val rotated = Bitmap.createBitmap(src, 0, 0, src.width, src.height, matrix, true)
         if (rotated !== src) src.recycle()
+        if (deviceState.timestampEnabled) {
+            drawTimestamp(Canvas(rotated), rotated.height)
+        }
         val out = ByteArrayOutputStream()
         rotated.compress(Bitmap.CompressFormat.JPEG, deviceState.jpegQuality, out)
         rotated.recycle()
         return out.toByteArray()
+    }
+
+    /** Decode [jpeg], burn in the timestamp, and re-encode. */
+    private fun overlayTimestamp(jpeg: ByteArray): ByteArray {
+        val bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return jpeg
+        drawTimestamp(Canvas(bitmap), bitmap.height)
+        val out = ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.JPEG, deviceState.jpegQuality, out)
+        bitmap.recycle()
+        return out.toByteArray()
+    }
+
+    /** Draw the timestamp text at the bottom-left of [canvas]. */
+    private fun drawTimestamp(canvas: Canvas, height: Int) {
+        val text = timestampText(height) ?: return
+        val margin = height * 0.03f
+        canvas.drawBitmap(text, margin, (height - margin - text.height).toFloat(), null)
+    }
+
+    /**
+     * The timestamp text as a bitmap (white on transparent, with a black
+     * drop shadow), re-rasterized only when the displayed second or the
+     * frame height changes.
+     */
+    private fun timestampText(height: Int): Bitmap? {
+        val second = System.currentTimeMillis() / 1000
+        val cached = textBitmap
+        if (cached != null && textBitmapSecond == second && textBitmapHeight == height) {
+            return cached
+        }
+        val paint =
+            Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.WHITE
+                textSize = height * 0.045f
+                setShadowLayer(textSize * 0.15f, 0f, 0f, Color.BLACK)
+            }
+        val label = TIMESTAMP_FORMAT.format(Date())
+        val pad = (height * 0.01f).toInt().coerceAtLeast(2)
+        val w = ceil(paint.measureText(label)).toInt() + pad * 2
+        val h = ceil(paint.descent() - paint.ascent()).toInt() + pad * 2
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        Canvas(bmp).drawText(label, pad.toFloat(), pad - paint.ascent(), paint)
+        cached?.recycle()
+        textBitmap = bmp
+        textBitmapSecond = second
+        textBitmapHeight = height
+        return bmp
     }
 }
