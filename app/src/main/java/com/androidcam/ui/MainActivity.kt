@@ -332,6 +332,15 @@ class MainActivity : AppCompatActivity() {
             },
         )
 
+        // Recording resolution spinner (detected sizes, or quality tiers as fallback)
+        val resOptions =
+            svc.supportedResolutions().ifEmpty { listOf("1920x1080", "1280x720", "640x480") }
+        db.resolutionSpinner.adapter =
+            ArrayAdapter(this, android.R.layout.simple_spinner_item, resOptions)
+                .also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+        val currentRes = "${deviceState.videoWidth}x${deviceState.videoHeight}"
+        db.resolutionSpinner.setSelection(resOptions.indexOf(currentRes).coerceAtLeast(0))
+
         // Storage location spinner
         val storageOptions =
             listOf(
@@ -405,6 +414,7 @@ class MainActivity : AppCompatActivity() {
         svc.updateIntervalSettings(db.intervalSwitch.isChecked, intervalSec)
         svc.setTimestampEnabled(db.timestampSwitch.isChecked)
         svc.setJpegQuality(db.jpegQuality.progress + 10)
+        svc.setResolution(db.resolutionSpinner.selectedItem as? String ?: "1920x1080")
         val storage =
             when (db.storageSpinner.selectedItemPosition) {
                 1 -> RecordingService.STORAGE_EXTERNAL

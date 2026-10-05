@@ -273,14 +273,6 @@
                         <option value="">Detecting…</option>
                     </select>
                 </div>
-                <div class="select-group">
-                    <label>Video Storage</label>
-                    <select id="storageLocation" onchange="setStorageLocation()">
-                        <option value="internal">Internal (app)</option>
-                        <option value="external">External (shared)</option>
-                        <option value="custom">Custom (choose folder)</option>
-                    </select>
-                </div>
                 <label style="margin-top: 8px; display: block;">
                     <input type="checkbox" id="timestampEnabled" onchange="setTimestamp()">
                     Timestamp on frames (live view + timelapse)
@@ -516,12 +508,6 @@
             // Recording requires the camera to be live.
             btn.disabled = !streaming && !recording;
 
-            // Keep the storage dropdown in sync.
-            const storageSel = document.getElementById('storageLocation');
-            if (storageSel && storageSel.value !== data.storageLocation) {
-                storageSel.value = data.storageLocation || 'internal';
-            }
-
             // Keep the timestamp checkbox in sync.
             const tsBox = document.getElementById('timestampEnabled');
             if (tsBox && tsBox.checked !== (data.timestampEnabled === true)) {
@@ -634,15 +620,6 @@
                 }
                 fetchStatus();
             } catch (e) { log(`Streaming: ${e.message}`, 'error'); }
-        }
-
-        async function setStorageLocation() {
-            const location = document.getElementById('storageLocation').value;
-            try {
-                await api(`/api/control/storage-location?location=${location}`);
-                log(`Storage location: ${location}`);
-                fetchStatus();
-            } catch (e) { log(`Storage: ${e.message}`, 'error'); }
         }
 
         async function setTimestamp() {
