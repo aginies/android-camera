@@ -285,6 +285,15 @@
                         Enable screen timeout
                     </label>
                 </div>
+                <div class="slider-group">
+                    <label>
+                        <span>JPEG Quality</span>
+                        <span id="jpegQualityValue">80</span>
+                    </label>
+                    <input type="range" id="jpegQuality" min="10" max="100" value="80"
+                           oninput="document.getElementById('jpegQualityValue').textContent=this.value"
+                           onchange="setJpegQuality()">
+                </div>
             </div>
 
             <div class="control-section">
@@ -497,6 +506,13 @@
                 intSec.value = data.intervalSeconds;
             }
 
+            // Keep the JPEG quality slider in sync.
+            const jq = document.getElementById('jpegQuality');
+            if (jq && data.jpegQuality && parseInt(jq.value, 10) !== data.jpegQuality) {
+                jq.value = data.jpegQuality;
+                document.getElementById('jpegQualityValue').textContent = data.jpegQuality;
+            }
+
             // Rebuild the resolution dropdown from the device's detected
             // capabilities (the hardcoded options remain as a fallback).
             const resSel = document.getElementById('resolution');
@@ -575,6 +591,14 @@
                 await api(`/api/control/timestamp?enabled=${enabled}`);
                 log(`Timestamp: ${enabled ? 'on' : 'off'}`);
             } catch (e) { log(`Timestamp: ${e.message}`, 'error'); }
+        }
+
+        async function setJpegQuality() {
+            const quality = parseInt(document.getElementById('jpegQuality').value, 10);
+            try {
+                await api(`/api/control/jpeg-quality?quality=${quality}`);
+                log(`JPEG quality: ${quality}`);
+            } catch (e) { log(`JPEG quality: ${e.message}`, 'error'); }
         }
 
         async function setIntervalSetting() {

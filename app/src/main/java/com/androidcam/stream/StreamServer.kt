@@ -97,6 +97,11 @@ class StreamServer(
 
         fun setTimestampEnabled(enabled: Boolean)
 
+        /** JPEG compression quality for the stream (10-100). */
+        fun jpegQuality(): Int
+
+        fun setJpegQuality(quality: Int)
+
         fun setStorageLocation(location: String): Boolean
 
         fun storageLocationName(): String
@@ -378,6 +383,13 @@ class StreamServer(
                         control.setTimestampEnabled(enabled)
                         call.respondText("Timestamp: ${if (enabled) "on" else "off"}")
                     }
+
+                    post("/jpeg-quality") {
+                        if (!authorized(call)) return@post unauthorized(call)
+                        val quality = call.parameters["quality"]?.toIntOrNull() ?: 80
+                        control.setJpegQuality(quality)
+                        call.respondText("JPEG quality: ${control.jpegQuality()}")
+                    }
                 }
             }
         }
@@ -408,6 +420,7 @@ class StreamServer(
             put("timelapseEncoding", deviceState.timelapseEncoding)
             put("timelapseProgress", deviceState.timelapseProgress)
             put("timestampEnabled", control.timestampEnabled())
+            put("jpegQuality", control.jpegQuality())
             put("error", deviceState.lastError ?: "")
         }
 
@@ -533,6 +546,15 @@ class StreamServer(
                     buildJsonObject {
                         put("status", "ok")
                         put("timestampEnabled", enabled)
+                    }.toString()
+                }
+
+                "set_jpeg_quality" -> {
+                    val quality = cmd["quality"]?.jsonPrimitive?.intOrNull ?: 80
+                    control.setJpegQuality(quality)
+                    buildJsonObject {
+                        put("status", "ok")
+                        put("jpegQuality", control.jpegQuality())
                     }.toString()
                 }
 

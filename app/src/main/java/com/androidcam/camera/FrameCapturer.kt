@@ -29,7 +29,6 @@ class FrameCapturer(
     companion object {
         /** Minimum time between processed frames (~10 fps stream rate). */
         private const val MIN_FRAME_INTERVAL_NS = 100_000_000L
-        private const val JPEG_QUALITY = 80
     }
 
     /** Single-thread executor the [ImageAnalysis] use case delivers frames on. */
@@ -104,7 +103,11 @@ class FrameCapturer(
 
         val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
         val out = ByteArrayOutputStream()
-        yuvImage.compressToJpeg(Rect(0, 0, width, height), JPEG_QUALITY, out)
+        yuvImage.compressToJpeg(
+            Rect(0, 0, width, height),
+            deviceState.jpegQuality,
+            out,
+        )
         return out.toByteArray()
     }
 
@@ -118,7 +121,7 @@ class FrameCapturer(
         val rotated = Bitmap.createBitmap(src, 0, 0, src.width, src.height, matrix, true)
         if (rotated !== src) src.recycle()
         val out = ByteArrayOutputStream()
-        rotated.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
+        rotated.compress(Bitmap.CompressFormat.JPEG, deviceState.jpegQuality, out)
         rotated.recycle()
         return out.toByteArray()
     }

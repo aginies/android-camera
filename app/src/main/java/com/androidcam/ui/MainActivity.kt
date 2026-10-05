@@ -18,6 +18,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.ArrayAdapter
+import android.widget.SeekBar
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -303,6 +304,19 @@ class MainActivity : AppCompatActivity() {
         db.intervalSwitch.isChecked = enabled
         db.intervalInput.setText(intervalSec.toString())
         db.timestampSwitch.isChecked = svc.timestampEnabled()
+        db.jpegQuality.progress = svc.jpegQuality() - 10
+        db.jpegQualityValue.text = svc.jpegQuality().toString()
+        db.jpegQuality.setOnSeekBarChangeListener(
+            object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    db.jpegQualityValue.text = (progress + 10).toString()
+                }
+
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+
+                override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            },
+        )
 
         // Storage location spinner
         val storageOptions =
@@ -355,6 +369,7 @@ class MainActivity : AppCompatActivity() {
         svc.updateToken(token)
         svc.updateIntervalSettings(db.intervalSwitch.isChecked, intervalSec)
         svc.setTimestampEnabled(db.timestampSwitch.isChecked)
+        svc.setJpegQuality(db.jpegQuality.progress + 10)
         val storage =
             when (db.storageSpinner.selectedItemPosition) {
                 1 -> RecordingService.STORAGE_EXTERNAL

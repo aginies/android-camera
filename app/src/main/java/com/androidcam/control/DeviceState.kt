@@ -223,6 +223,17 @@ class DeviceState {
         timelapseListeners.remove(listener)
     }
 
+    // --- JPEG quality -------------------------------------------------------
+
+    // JPEG compression quality (10-100) for the MJPEG stream and the
+    // timelapse frames captured from it.
+    private val _jpegQuality = AtomicInteger(80)
+    var jpegQuality: Int
+        get() = _jpegQuality.get()
+        set(value) {
+            _jpegQuality.set(value.coerceIn(10, 100))
+        }
+
     // --- Timestamp overlay --------------------------------------------------------
 
     // When true, timelapse frames get a date/time stamp burned in.

@@ -66,6 +66,8 @@ class RecordingService :
         private const val KEY_INTERVAL_ENABLED = "interval_enabled"
         private const val KEY_INTERVAL_SECONDS = "interval_seconds"
         private const val KEY_TIMESTAMP = "timestamp_enabled"
+        private const val KEY_JPEG_QUALITY = "jpeg_quality"
+        private const val DEFAULT_JPEG_QUALITY = 80
         private const val KEY_STORAGE_LOCATION = "storage_location"
         private const val KEY_RESOLUTION = "resolution"
         private const val KEY_CUSTOM_TREE_URI = "custom_tree_uri"
@@ -117,6 +119,7 @@ class RecordingService :
     private var intervalEnabled = false
     private var intervalSeconds = DEFAULT_INTERVAL_SECONDS
     private var timestampEnabled = false
+    private var jpegQuality = DEFAULT_JPEG_QUALITY
 
     // Active timelapse session (null when disabled): captures one JPEG from
     // the stream every [intervalSeconds].
@@ -172,6 +175,8 @@ class RecordingService :
         intervalSeconds = prefs.getInt(KEY_INTERVAL_SECONDS, DEFAULT_INTERVAL_SECONDS)
         timestampEnabled = prefs.getBoolean(KEY_TIMESTAMP, false)
         deviceState.timestampEnabled = timestampEnabled
+        jpegQuality = prefs.getInt(KEY_JPEG_QUALITY, DEFAULT_JPEG_QUALITY)
+        deviceState.jpegQuality = jpegQuality
         storageLocation = prefs.getString(KEY_STORAGE_LOCATION, STORAGE_INTERNAL) ?: STORAGE_INTERNAL
         customTreeUri = prefs.getString(KEY_CUSTOM_TREE_URI, null)?.let { Uri.parse(it) }
         requestedQuality =
@@ -306,6 +311,16 @@ class RecordingService :
         deviceState.timestampEnabled = enabled
         prefs.edit().putBoolean(KEY_TIMESTAMP, enabled).apply()
         Timber.i("Timestamp overlay: ${if (enabled) "on" else "off"}")
+    }
+
+    /** JPEG compression quality for the stream (10-100). */
+    override fun jpegQuality(): Int = jpegQuality
+
+    override fun setJpegQuality(quality: Int) {
+        jpegQuality = quality.coerceIn(10, 100)
+        deviceState.jpegQuality = jpegQuality
+        prefs.edit().putInt(KEY_JPEG_QUALITY, jpegQuality).apply()
+        Timber.i("JPEG quality: $jpegQuality")
     }
 
     /** Start the stream server + mDNS advertising with the current [token]. */

@@ -155,7 +155,7 @@ object TimelapseEncoder {
         if (inIdx < 0) {
             Timber.e(
                 "Timelapse: encoder input buffer unavailable " +
-                    if (frameIndex == null) "at end-of-stream" else "at frame $frameIndex"
+                    if (frameIndex == null) "at end-of-stream" else "at frame $frameIndex",
             )
         }
         return inIdx

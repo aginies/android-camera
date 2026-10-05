@@ -70,6 +70,38 @@
             android:layout_marginVertical="20dp"
             android:background="?android:attr/listDivider" />
 
+        <!-- JPEG quality -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_jpeg_label"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <SeekBar
+                android:id="@+id/jpegQuality"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:max="90" />
+
+            <TextView
+                android:id="@+id/jpegQualityValue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:minWidth="40dp"
+                android:gravity="end"
+                android:text="80" />
+        </LinearLayout>
+
         <!-- Storage location -->
         <TextView
             android:layout_width="wrap_content"
