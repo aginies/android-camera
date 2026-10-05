@@ -3,6 +3,7 @@ package com.androidcam.discovery
 import timber.log.Timber
 import java.net.InetAddress
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.jmdns.JmDNS
 import javax.jmdns.ServiceInfo
 
@@ -32,6 +33,9 @@ class MdnsDiscovery {
 
     @Volatile
     private var serviceInfo: ServiceInfo? = null
+
+    /** Once set the executor is shut down; guards against double-stop. */
+    private val stopped = AtomicBoolean(false)
 
     /** Start advertising this device on the local network (background thread). */
     fun start(
@@ -66,9 +70,16 @@ class MdnsDiscovery {
         }
     }
 
-    /** Stop advertising and release resources (background thread). */
+    /**
+     * Stop advertising, release resources, and shut down the executor
+     * (background thread). The instance cannot be started again afterwards.
+     */
     fun stop() {
-        executor.execute { stopInternal() }
+        if (!stopped.compareAndSet(false, true)) return
+        executor.execute {
+            stopInternal()
+            executor.shutdown()
+        }
     }
 
     private fun stopInternal() {

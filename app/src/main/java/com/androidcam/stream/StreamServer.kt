@@ -17,6 +17,7 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.cors.routing.CORS
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondOutputStream
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
@@ -43,6 +44,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import timber.log.Timber
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.Inet4Address
 import java.net.InetAddress
@@ -135,6 +137,16 @@ class StreamServer(
 
         /** Idle poll interval for the MJPEG loop when no new frame is available. */
         private const val MJPEG_IDLE_DELAY_MS = 50L
+
+        /** How long a cached device IP stays valid before re-resolving. */
+        private const val IP_CACHE_TTL_MS = 30_000L
+
+        /** Static MJPEG multipart header parts, encoded once instead of per frame. */
+        private val MJPEG_BOUNDARY_LINE = "--$MJPEG_BOUNDARY\r\n".toByteArray()
+        private val MJPEG_CONTENT_TYPE = "Content-Type: image/jpeg\r\n".toByteArray()
+        private val MJPEG_CONTENT_LENGTH_PREFIX = "Content-Length: ".toByteArray()
+        private val MJPEG_HEADER_END = "\r\n\r\n".toByteArray()
+        private val MJPEG_PART_END = "\r\n".toByteArray()
     }
 
     private var server: ApplicationEngine? = null
@@ -166,8 +178,37 @@ class StreamServer(
     /** Latest JPEG frame, or null while the camera is off. */
     fun getLatestFrame(): ByteArray? = debugFrame ?: latestFrame.get()
 
-    /** Get the device's local IPv4 address (site-local preferred). */
+    /** Cached device IP + when it was resolved (bounded staleness for silent DHCP renewals). */
+    @Volatile
+    private var cachedDeviceIp: String? = null
+
+    @Volatile
+    private var cachedDeviceIpAtMs = 0L
+
+    /**
+     * Get the device's local IPv4 address (site-local preferred).
+     *
+     * Resolving walks every network interface, which is expensive; the result
+     * is cached for [IP_CACHE_TTL_MS] and dropped via [invalidateIpCache] on
+     * network changes.
+     */
     fun getDeviceIp(): String {
+        val cached = cachedDeviceIp
+        if (cached != null && System.currentTimeMillis() - cachedDeviceIpAtMs < IP_CACHE_TTL_MS) {
+            return cached
+        }
+        val ip = resolveDeviceIp()
+        cachedDeviceIp = ip
+        cachedDeviceIpAtMs = System.currentTimeMillis()
+        return ip
+    }
+
+    /** Drop the cached IP; the next [getDeviceIp] re-resolves. Call on network changes. */
+    fun invalidateIpCache() {
+        cachedDeviceIp = null
+    }
+
+    private fun resolveDeviceIp(): String {
         try {
             for (iface in NetworkInterface.getNetworkInterfaces().toList()) {
                 if (!iface.isUp || iface.isLoopback) continue
@@ -237,7 +278,7 @@ class StreamServer(
 
         application.routing {
             get("/") {
-                val html = loadAsset("web/index.html")
+                val html = indexHtml()
                 if (html != null) {
                     call.respondText(html, ContentType.Text.Html)
                 } else {
@@ -262,11 +303,28 @@ class StreamServer(
                         while (true) {
                             val frame = latestFrame.get()
                             if (frame != null && frame !== lastWritten) {
-                                write("--$MJPEG_BOUNDARY\r\n".toByteArray())
-                                write("Content-Type: image/jpeg\r\n".toByteArray())
-                                write("Content-Length: ${frame.size}\r\n\r\n".toByteArray())
-                                write(frame)
-                                write("\r\n".toByteArray())
+                                // Assemble the full multipart part in one pre-sized
+                                // buffer (exact final size, no resizing) and send it
+                                // as a single write.
+                                val contentLength = frame.size.toString().toByteArray()
+                                val part =
+                                    ByteArrayOutputStream(
+                                        MJPEG_BOUNDARY_LINE.size +
+                                            MJPEG_CONTENT_TYPE.size +
+                                            MJPEG_CONTENT_LENGTH_PREFIX.size +
+                                            contentLength.size +
+                                            MJPEG_HEADER_END.size +
+                                            frame.size +
+                                            MJPEG_PART_END.size,
+                                    )
+                                part.write(MJPEG_BOUNDARY_LINE)
+                                part.write(MJPEG_CONTENT_TYPE)
+                                part.write(MJPEG_CONTENT_LENGTH_PREFIX)
+                                part.write(contentLength)
+                                part.write(MJPEG_HEADER_END)
+                                part.write(frame)
+                                part.write(MJPEG_PART_END)
+                                part.writeTo(this)
                                 flush()
                                 lastWritten = frame
                             } else {
@@ -277,6 +335,17 @@ class StreamServer(
                         // Client disconnected — end the stream
                         Timber.d("MJPEG client disconnected")
                     }
+                }
+            }
+
+            // Single latest frame as a still JPEG ("screenshot")
+            get("/snapshot") {
+                if (!authorized(call)) return@get unauthorized(call)
+                val frame = getLatestFrame()
+                if (frame == null) {
+                    call.respond(HttpStatusCode.ServiceUnavailable)
+                } else {
+                    call.respondBytes(frame, ContentType.Image.JPEG)
                 }
             }
 
@@ -709,6 +778,18 @@ class StreamServer(
             put("status", "error")
             put("message", message)
         }.toString()
+
+    /** Cached web UI; the APK asset is immutable, so it is loaded at most once. */
+    @Volatile
+    private var cachedIndexHtml: String? = null
+
+    /** The web UI asset, loaded on first use and cached for subsequent requests. */
+    private fun indexHtml(): String? {
+        cachedIndexHtml?.let { return it }
+        val html = loadAsset("web/index.html")
+        if (html != null) cachedIndexHtml = html
+        return html
+    }
 
     /** Load a text file from the APK's assets directory. */
     private fun loadAsset(path: String): String? =

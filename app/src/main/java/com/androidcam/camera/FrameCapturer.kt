@@ -19,6 +19,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.ceil
 
@@ -42,8 +43,26 @@ class FrameCapturer(
         private val TIMESTAMP_FORMAT = SimpleDateFormat("yyyy-MM-dd  HH:mm:ss", Locale.US)
     }
 
-    /** Single-thread executor the [ImageAnalysis] use case delivers frames on. */
-    val executor: Executor = Executors.newSingleThreadExecutor()
+    private val frameExecutor = Executors.newSingleThreadExecutor()
+
+    /**
+     * Executor the [ImageAnalysis] use case delivers frames on. Swallows
+     * [RejectedExecutionException] so a frame delivered while the capturer is
+     * shutting down is dropped quietly instead of crashing the camera thread.
+     */
+    val executor: Executor =
+        Executor { command ->
+            try {
+                frameExecutor.execute(command)
+            } catch (e: RejectedExecutionException) {
+                Timber.d("Frame dropped: capturer is shutting down")
+            }
+        }
+
+    /** Shut down the frame executor; the worker thread terminates after draining queued frames. */
+    fun shutdown() {
+        frameExecutor.shutdown()
+    }
 
     private val lastFrameNanos = AtomicLong(0)
 
@@ -81,7 +100,8 @@ class FrameCapturer(
      *
      * The three YUV_420_888 planes are repacked into NV21 (which [YuvImage]
      * understands), honouring row and pixel strides so tiled or interleaved
-     * plane layouts work.
+     * plane layouts work. Plane data is moved with bulk `ByteBuffer.get`
+     * transfers instead of per-byte reads.
      */
     private fun imageProxyToJpeg(image: ImageProxy): ByteArray {
         val width = image.width
@@ -91,40 +111,63 @@ class FrameCapturer(
         val uBuffer = image.planes[1].buffer
         val vBuffer = image.planes[2].buffer
         val yRowStride = image.planes[0].rowStride
-        val uvRowStride = image.planes[1].rowStride
+        val uRowStride = image.planes[1].rowStride
+        val vRowStride = image.planes[2].rowStride
         val uvPixelStride = image.planes[1].pixelStride
 
         val nv21 = ByteArray(width * height * 3 / 2)
         var outPos = 0
 
-        // Y plane (absolute reads — plane buffers are read-only)
+        // Y plane (bulk copies — plane buffers are read-only; duplicates keep
+        // the original buffers' positions untouched)
+        val yBuf = yBuffer.duplicate()
         if (yRowStride == width) {
-            for (i in 0 until width * height) {
-                nv21[i] = yBuffer.get(i)
-            }
+            yBuf.get(nv21, 0, width * height)
             outPos = width * height
         } else {
             for (row in 0 until height) {
-                val base = row * yRowStride
-                for (col in 0 until width) {
-                    nv21[outPos++] = yBuffer.get(base + col)
-                }
+                yBuf.position(row * yRowStride)
+                yBuf.get(nv21, outPos, width)
+                outPos += width
             }
         }
 
         // Interleave V/U in NV21 order (V first)
         val halfWidth = width / 2
         val halfHeight = height / 2
-        for (row in 0 until halfHeight) {
-            for (col in 0 until halfWidth) {
-                val idx = row * uvRowStride + col * uvPixelStride
-                nv21[outPos++] = vBuffer.get(idx)
-                nv21[outPos++] = uBuffer.get(idx)
+        if (uvPixelStride == 1) {
+            // Separate U/V planes: bulk-copy each row, then interleave in RAM.
+            val vRow = ByteArray(halfWidth)
+            val uRow = ByteArray(halfWidth)
+            val vBuf = vBuffer.duplicate()
+            val uBuf = uBuffer.duplicate()
+            for (row in 0 until halfHeight) {
+                vBuf.position(row * vRowStride)
+                vBuf.get(vRow)
+                uBuf.position(row * uRowStride)
+                uBuf.get(uRow)
+                var o = outPos
+                for (c in 0 until halfWidth) {
+                    nv21[o++] = vRow[c]
+                    nv21[o++] = uRow[c]
+                }
+                outPos = o
+            }
+        } else {
+            // Interleaved (pixelStride == 2) or exotic layout: the pair order
+            // (NV12 vs NV21) is not exposed by the API, so read per pixel.
+            for (row in 0 until halfHeight) {
+                val base = row * uRowStride
+                for (col in 0 until halfWidth) {
+                    val idx = base + col * uvPixelStride
+                    nv21[outPos++] = vBuffer.get(idx)
+                    nv21[outPos++] = uBuffer.get(idx)
+                }
             }
         }
 
         val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
-        val out = ByteArrayOutputStream()
+        val out = ByteArrayOutputStream(width * height / 8)
         yuvImage.compressToJpeg(
             Rect(0, 0, width, height),
             deviceState.jpegQuality,

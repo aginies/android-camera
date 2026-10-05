@@ -102,6 +102,13 @@ class RecordingService :
         private const val QR_SCAN_TIMEOUT_MS = 30_000L
         private const val QR_SCAN_PERIOD_MS = 250L
 
+        /**
+         * Longest side (px) of the bitmap handed to the QR scanner. Full
+         * frames are downscaled: QR codes decode fine from much smaller
+         * images, and the smaller bitmap makes ML Kit faster and cheaper.
+         */
+        private const val QR_SCAN_MAX_DIM = 1024
+
         /** Intent extra to set the auth token at runtime. */
         const val EXTRA_SET_TOKEN = "set_token"
 
@@ -666,6 +673,10 @@ class RecordingService :
         stopTimelapseSession()
         cameraManager?.stopCamera()
         cameraManager = null
+        // Release the capturer's executor thread (non-daemon; it would leak
+        // otherwise). Late frame deliveries are dropped safely by the
+        // capturer's executor wrapper.
+        frameCapturer?.shutdown()
         frameCapturer = null
         deviceState.stopStreaming()
         updateNotification()
@@ -1076,7 +1087,7 @@ class RecordingService :
                     while (isActive && token == null && System.currentTimeMillis() < deadline) {
                         val frame = streamServer?.getLatestFrame()
                         if (frame != null) {
-                            val bitmap = BitmapFactory.decodeByteArray(frame, 0, frame.size)
+                            val bitmap = decodeScanBitmap(frame)
                             if (bitmap != null) {
                                 try {
                                     for (barcode in scanQr(scanner, bitmap)) {
@@ -1113,6 +1124,27 @@ class RecordingService :
     fun stopPrusaQrScan() {
         qrScanJob?.cancel()
         qrScanJob = null
+    }
+
+    /**
+     * Decode a JPEG stream frame for QR scanning, downscaled so the longest
+     * side is at most [QR_SCAN_MAX_DIM] px. The full-resolution bitmap is
+     * recycled before the scaled one is returned.
+     */
+    private fun decodeScanBitmap(jpeg: ByteArray): Bitmap? {
+        val full = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return null
+        val maxSide = maxOf(full.width, full.height)
+        if (maxSide <= QR_SCAN_MAX_DIM) return full
+        val scale = QR_SCAN_MAX_DIM.toFloat() / maxSide
+        val scaled =
+            Bitmap.createScaledBitmap(
+                full,
+                (full.width * scale).toInt().coerceAtLeast(1),
+                (full.height * scale).toInt().coerceAtLeast(1),
+                true,
+            )
+        full.recycle()
+        return scaled
     }
 
     /** Run the ML Kit QR scanner on one frame (Task → suspend bridge). */
@@ -1170,13 +1202,16 @@ class RecordingService :
         val callback =
             object : ConnectivityManager.NetworkCallback() {
                 override fun onLost(network: Network) {
+                    streamServer?.invalidateIpCache()
                     deviceState.setStreamUrl(null)
                 }
 
                 override fun onAvailable(network: Network) {
+                    // The LAN address may have changed: re-resolve the IP,
+                    // refresh the displayed URL, and re-send the camera info
+                    // so Prusa Connect shows the current address.
+                    streamServer?.invalidateIpCache()
                     refreshStreamUrl()
-                    // The LAN address may have changed: re-send the camera
-                    // info so Prusa Connect shows the current address.
                     prusaUploader?.markInfoStale()
                 }
             }

@@ -342,6 +342,26 @@
         let failCount = 0;
         const MAX_FAILS = 5;
 
+        // Status rows currently in the DOM (label -> value span), so the 2 s
+        // poll only touches rows whose value actually changed.
+        const statusRows = new Map();
+
+        function setStatusField(info, label, value) {
+            const text = String(value);
+            let span = statusRows.get(label);
+            if (!span) {
+                const row = document.createElement('div');
+                const labelSpan = document.createElement('span');
+                labelSpan.textContent = label + ': ';
+                span = document.createElement('span');
+                row.appendChild(labelSpan);
+                row.appendChild(span);
+                info.appendChild(row);
+                statusRows.set(label, span);
+            }
+            if (span.textContent !== text) span.textContent = text;
+        }
+
         function log(msg, type = '') {
             const panel = document.getElementById('logPanel');
             const entry = document.createElement('div');
@@ -456,7 +476,7 @@
 
         function updateStatus(data) {
             const info = document.getElementById('statusInfo');
-            info.innerHTML = '';
+            if (statusRows.size === 0) info.textContent = ''; // drop the "No connection" placeholder
             const fields = [
                 ['Streaming', data.streaming ? 'yes' : 'no'],
                 ['Recording', data.recording === 'recording' ? 'yes' : 'no'],
@@ -470,15 +490,17 @@
             ];
             if (data.timelapseFrames > 0) fields.push(['Timelapse frames', data.timelapseFrames]);
             if (data.error) fields.push(['Error', data.error]);
+            const present = new Set();
             for (const [label, value] of fields) {
-                const row = document.createElement('div');
-                const labelSpan = document.createElement('span');
-                labelSpan.textContent = label + ': ';
-                const valueSpan = document.createElement('span');
-                valueSpan.textContent = value;
-                row.appendChild(labelSpan);
-                row.appendChild(valueSpan);
-                info.appendChild(row);
+                present.add(label);
+                setStatusField(info, label, value);
+            }
+            // Drop rows for fields no longer reported (e.g. Error, Timelapse frames).
+            for (const [label, span] of statusRows) {
+                if (!present.has(label)) {
+                    span.parentElement.remove();
+                    statusRows.delete(label);
+                }
             }
             // Timelapse creation progress bar.
             const tlWrap = document.getElementById('timelapseProgress');
@@ -497,14 +519,20 @@
             const recording = data.recording === 'recording';
 
             const streamBtn = document.getElementById('btnStream');
-            streamBtn.textContent = streaming ? '■ Stop Streaming' : '▶ Start Streaming';
-            streamBtn.className = streaming ? 'btn btn-danger' : 'btn btn-success';
+            const streamLabel = streaming ? '■ Stop Streaming' : '▶ Start Streaming';
+            if (streamBtn.textContent !== streamLabel) {
+                streamBtn.textContent = streamLabel;
+                streamBtn.className = streaming ? 'btn btn-danger' : 'btn btn-success';
+            }
 
             const btn = document.getElementById('btnRecord');
-            btn.textContent = recording
+            const recordLabel = recording
                 ? '⏹ Stop Recording'
                 : (data.intervalEnabled ? '⏺ Start Timelapse' : '⏺ Start Recording');
-            btn.className = recording ? 'btn btn-success' : 'btn btn-danger';
+            if (btn.textContent !== recordLabel) {
+                btn.textContent = recordLabel;
+                btn.className = recording ? 'btn btn-success' : 'btn btn-danger';
+            }
             // Recording requires the camera to be live.
             btn.disabled = !streaming && !recording;
 
@@ -550,35 +578,44 @@
             }
             const prusaStatus = document.getElementById('prusaStatus');
             if (prusaStatus) {
-                prusaStatus.textContent = !data.prusaEnabled
+                const text = !data.prusaEnabled
                     ? 'disabled'
                     : (data.prusaError
                         ? `⚠ ${data.prusaError}`
                         : data.prusaRegistered
                             ? `✓ registered${data.prusaLastUpload ? ' • last upload ' + new Date(data.prusaLastUpload).toLocaleTimeString() : ''}`
                             : 'registering…');
+                if (prusaStatus.textContent !== text) prusaStatus.textContent = text;
             }
 
-            // Rebuild the resolution dropdown from the device's detected
-            // capabilities (the hardcoded options remain as a fallback).
+            // Rebuild the resolution dropdown only when the device's detected
+            // capabilities actually change (the hardcoded options remain as a
+            // fallback).
             const resSel = document.getElementById('resolution');
             if (resSel && Array.isArray(data.supportedResolutions) && data.supportedResolutions.length > 0) {
-                const current = resSel.value;
-                resSel.innerHTML = '';
-                for (const size of data.supportedResolutions) {
-                    const opt = document.createElement('option');
-                    opt.value = size;
-                    opt.textContent = resLabel(size);
-                    resSel.appendChild(opt);
+                const list = data.supportedResolutions;
+                const rendered = renderedResolutions;
+                const changed = !rendered || list.length !== rendered.length ||
+                    list.some((v, i) => v !== rendered[i]);
+                if (changed) {
+                    renderedResolutions = list.slice();
+                    const current = resSel.value;
+                    resSel.innerHTML = '';
+                    for (const size of list) {
+                        const opt = document.createElement('option');
+                        opt.value = size;
+                        opt.textContent = resLabel(size);
+                        resSel.appendChild(opt);
+                    }
+                    // Keep the current selection visible if detection missed it.
+                    if (current && ![...resSel.options].some(o => o.value === current)) {
+                        const opt = document.createElement('option');
+                        opt.value = current;
+                        opt.textContent = current + ' (current)';
+                        resSel.prepend(opt);
+                    }
                 }
-                // Keep the current selection visible if detection missed it.
-                if (current && ![...resSel.options].some(o => o.value === current)) {
-                    const opt = document.createElement('option');
-                    opt.value = current;
-                    opt.textContent = current + ' (current)';
-                    resSel.prepend(opt);
-                }
-                if (data.resolution) resSel.value = data.resolution;
+                if (data.resolution && resSel.value !== data.resolution) resSel.value = data.resolution;
             }
 
             // Show where a new recording was saved, for 5 seconds.
@@ -590,6 +627,10 @@
 
         let lastSeenRecordedFile = '';
         let recordedFileTimer = null;
+        // Resolution options currently rendered in the dropdown (null until the
+        // first successful status poll), used to skip rebuilding it on every
+        // 2 s poll when the device's capabilities haven't changed.
+        let renderedResolutions = null;
 
         function resLabel(size) {
             const m = size.match(/^(\d+)x(\d+)$/);
