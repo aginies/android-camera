@@ -39,11 +39,11 @@ import com.androidcam.prusa.PrusaConnectSettings
 import com.androidcam.prusa.PrusaUploader
 import com.androidcam.prusa.QrTokenParser
 import com.androidcam.ui.MainActivity
-import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.BarcodeScanner
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
-import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.common.InputImage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -1028,12 +1028,13 @@ class RecordingService :
         Timber.i("Prusa Connect interval: ${clamped}s")
     }
 
-    /** WS-triggered scan: a found token is set automatically. */
+    /** WS-triggered scan: a found token is set and Prusa Connect enabled. */
     override fun startPrusaQrScan() {
         startPrusaQrScan { token ->
             if (token != null) {
                 setPrusaToken(token)
-                Timber.i("Prusa QR scan (WS): token found and set")
+                setPrusaEnabled(true)
+                Timber.i("Prusa QR scan (WS): token found, Prusa Connect enabled")
             } else {
                 Timber.i("Prusa QR scan (WS): no token found")
             }
@@ -1045,7 +1046,8 @@ class RecordingService :
     /**
      * Scan stream frames for a QR code containing a Prusa Connect token.
      * The camera is turned on automatically if it is off (frames are the scan
-     * source — no second camera session needed).
+     * source — no second camera session needed), and turned off again when
+     * the scan ends if it was off before.
      *
      * @param onResult invoked on the main thread with the extracted token, or
      *   null if no QR with a token was found within the timeout.
@@ -1056,12 +1058,13 @@ class RecordingService :
             qrScanner
                 ?: BarcodeScanning
                     .getClient(
-                        BarcodeScannerOptions.Builder()
+                        BarcodeScannerOptions
+                            .Builder()
                             .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
                             .build(),
-                    )
-                    .also { qrScanner = it }
-        if (!deviceState.isStreaming) {
+                    ).also { qrScanner = it }
+        val wasStreaming = deviceState.isStreaming
+        if (!wasStreaming) {
             Timber.i("Prusa QR scan: camera off — starting streaming")
             startStreaming()
         }
@@ -1069,29 +1072,39 @@ class RecordingService :
             encodeScope.launch {
                 val deadline = System.currentTimeMillis() + QR_SCAN_TIMEOUT_MS
                 var token: String? = null
-                while (isActive && token == null && System.currentTimeMillis() < deadline) {
-                    val frame = streamServer?.getLatestFrame()
-                    if (frame != null) {
-                        val bitmap = BitmapFactory.decodeByteArray(frame, 0, frame.size)
-                        if (bitmap != null) {
-                            try {
-                                for (barcode in scanQr(scanner, bitmap)) {
-                                    val t = QrTokenParser.extractToken(barcode.rawValue.orEmpty())
-                                    if (t != null) {
-                                        token = t
-                                        break
+                try {
+                    while (isActive && token == null && System.currentTimeMillis() < deadline) {
+                        val frame = streamServer?.getLatestFrame()
+                        if (frame != null) {
+                            val bitmap = BitmapFactory.decodeByteArray(frame, 0, frame.size)
+                            if (bitmap != null) {
+                                try {
+                                    for (barcode in scanQr(scanner, bitmap)) {
+                                        val raw = barcode.rawValue.orEmpty()
+                                        Timber.i("Prusa QR scan: decoded QR payload: $raw")
+                                        val t = QrTokenParser.extractToken(raw)
+                                        if (t != null) {
+                                            token = t
+                                            break
+                                        }
                                     }
+                                } catch (e: Exception) {
+                                    Timber.w(e, "Prusa QR scan: frame failed")
+                                } finally {
+                                    bitmap.recycle()
                                 }
-                            } catch (e: Exception) {
-                                Timber.w(e, "Prusa QR scan: frame failed")
-                            } finally {
-                                bitmap.recycle()
                             }
                         }
+                        delay(QR_SCAN_PERIOD_MS)
                     }
-                    delay(QR_SCAN_PERIOD_MS)
+                    Timber.i("Prusa QR scan: ${if (token != null) "token found" else "timeout"}")
+                } finally {
+                    // Restore the camera state: stop the capture the scan started.
+                    if (!wasStreaming) {
+                        Timber.i("Prusa QR scan: stopping streaming (camera was off before)")
+                        stopStreaming()
+                    }
                 }
-                Timber.i("Prusa QR scan: ${if (token != null) "token found" else "timeout"}")
                 withContext(Dispatchers.Main) { onResult(token) }
             }
     }

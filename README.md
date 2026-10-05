@@ -173,8 +173,10 @@ receive JSON responses:
 
 `start_prusa_qr_scan` runs a 30 s scan of the stream frames for a QR code
 containing a Prusa Connect token (ML Kit barcode scanning); a found token is
-set automatically. `inject_test_frame` (debug builds only) overrides the
-frame the pipeline sees, for testing without a camera.
+set and Prusa Connect is enabled automatically. If the scan had to turn the
+camera on, the capture is stopped again when the scan ends.
+`inject_test_frame` (debug builds only) overrides the frame the pipeline
+sees, for testing without a camera.
 
 ### MJPEG
 
@@ -230,8 +232,12 @@ with ML Kit barcode scanning for up to 30 s — no second camera session is
 needed, the same frames that feed the MJPEG stream are analyzed. The parser
 accepts a bare 20-character token or a URL/JSON payload containing it
 (`?token=...`, a `/token/...` path segment, or a `"token"` field), so it
-works regardless of the exact QR payload format Connect uses. A found token
-is filled into the token field (dialog) or set directly (WebSocket).
+works regardless of the exact QR payload format Connect uses.
+
+When a token is found, it is applied immediately and **Prusa Connect is
+enabled** — no need to press Save. If the scan had to turn the camera on,
+the capture is stopped again when the scan ends (an already-running stream
+is left untouched).
 
 Notes:
 

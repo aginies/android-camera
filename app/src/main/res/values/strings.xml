@@ -37,7 +37,7 @@
     <string name="settings_prusa_token_hint">20-character token from Prusa Connect</string>
     <string name="settings_prusa_scan_qr">Scan QR code</string>
     <string name="settings_prusa_qr_scanning">Scanning… point the camera at the QR</string>
-    <string name="settings_prusa_qr_found">Token scanned</string>
+    <string name="settings_prusa_qr_found">Token scanned — Prusa Connect enabled</string>
     <string name="settings_prusa_qr_timeout">No QR code found — make sure the QR fills a good part of the view and try again</string>
     <string name="settings_prusa_name_label">Camera name</string>
     <string name="settings_prusa_name_hint">Name shown in Prusa Connect</string>

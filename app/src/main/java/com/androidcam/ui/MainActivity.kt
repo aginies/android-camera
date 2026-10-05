@@ -388,6 +388,11 @@ class MainActivity : AppCompatActivity() {
                     db.scanPrusaQrButton.text = getString(R.string.settings_prusa_scan_qr)
                     if (token != null) {
                         db.prusaTokenInput.setText(token)
+                        db.prusaSwitch.isChecked = true
+                        // Scanning is a "register" action: apply immediately,
+                        // no need to press Save.
+                        svc.setPrusaToken(token)
+                        svc.setPrusaEnabled(true)
                         Toast.makeText(this, R.string.settings_prusa_qr_found, Toast.LENGTH_SHORT).show()
                     } else {
                         Toast.makeText(this, R.string.settings_prusa_qr_timeout, Toast.LENGTH_LONG).show()
