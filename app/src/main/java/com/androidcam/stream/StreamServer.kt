@@ -30,12 +30,15 @@ import io.ktor.websocket.send
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import timber.log.Timber
 import java.io.IOException
 import java.net.Inet4Address
@@ -77,6 +80,17 @@ class StreamServer(
         fun toggleTorch(): Boolean
 
         fun setResolution(resolution: String)
+
+        /** Supported resolutions as "WxH" strings, highest first. */
+        fun supportedResolutions(): List<String>
+
+        /** Current interval (timelapse) settings: (enabled, seconds). */
+        fun intervalSettings(): Pair<Boolean, Int>
+
+        fun updateIntervalSettings(
+            enabled: Boolean,
+            seconds: Int,
+        )
 
         fun setStorageLocation(location: String): Boolean
 
@@ -251,6 +265,16 @@ class StreamServer(
                     call.respondText(statusJson().toString(), ContentType.Application.Json)
                 }
 
+                get("/resolutions") {
+                    if (!authorized(call)) return@get unauthorized(call)
+                    call.respondText(
+                        buildJsonArray {
+                            control.supportedResolutions().forEach { add(JsonPrimitive(it)) }
+                        }.toString(),
+                        ContentType.Application.Json,
+                    )
+                }
+
                 route("/control") {
                     post("/start-streaming") {
                         if (!authorized(call)) return@post unauthorized(call)
@@ -334,6 +358,14 @@ class StreamServer(
                             )
                         }
                     }
+
+                    post("/interval") {
+                        if (!authorized(call)) return@post unauthorized(call)
+                        val enabled = call.parameters["enabled"]?.toBooleanStrictOrNull() ?: false
+                        val seconds = call.parameters["seconds"]?.toIntOrNull() ?: 60
+                        control.updateIntervalSettings(enabled, seconds)
+                        call.respondText("Interval: ${if (enabled) "on" else "off"} (${seconds}s)")
+                    }
                 }
             }
         }
@@ -347,6 +379,9 @@ class StreamServer(
             put("facing", deviceState.facing.name.lowercase())
             put("rotation", deviceState.rotationDegrees)
             put("resolution", "${deviceState.videoWidth}x${deviceState.videoHeight}")
+            putJsonArray("supportedResolutions") {
+                control.supportedResolutions().forEach { add(JsonPrimitive(it)) }
+            }
             put("ip", getDeviceIp())
             put("port", deviceState.streamPort)
             put("recordedVideos", deviceState.recordedVideosCount)
@@ -354,6 +389,12 @@ class StreamServer(
             put("screenTimeoutEnabled", deviceState.screenTimeoutEnabled)
             put("screenTimeoutSeconds", deviceState.screenTimeoutSeconds)
             put("storageLocation", control.storageLocationName())
+            val (intervalOn, intervalSec) = control.intervalSettings()
+            put("intervalEnabled", intervalOn)
+            put("intervalSeconds", intervalSec)
+            put("timelapseFrames", deviceState.timelapseFrames)
+            put("timelapseEncoding", deviceState.timelapseEncoding)
+            put("timelapseProgress", deviceState.timelapseProgress)
             put("error", deviceState.lastError ?: "")
         }
 
@@ -454,6 +495,22 @@ class StreamServer(
                     buildJsonObject {
                         put("status", if (applied) "ok" else "error")
                         put("storageLocation", control.storageLocationName())
+                    }.toString()
+                }
+
+                "set_interval" -> {
+                    val enabled = cmd["enabled"]?.jsonPrimitive?.booleanOrNull ?: false
+                    val seconds = cmd["seconds"]?.jsonPrimitive?.intOrNull ?: 60
+                    control.updateIntervalSettings(enabled, seconds)
+                    buildJsonObject {
+                        put("status", "ok")
+                        put(
+                            "interval",
+                            buildJsonObject {
+                                put("enabled", enabled)
+                                put("seconds", seconds)
+                            },
+                        )
                     }.toString()
                 }
 

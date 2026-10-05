@@ -99,6 +99,10 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread { showRecordedFile(path) }
     }
 
+    private val timelapseListener: () -> Unit = {
+        runOnUiThread { updateStreamStatus() }
+    }
+
     private val screenTimeoutHandler = Handler(Looper.getMainLooper())
     private var screenTimeoutRunnable: Runnable? = null
 
@@ -119,6 +123,7 @@ class MainActivity : AppCompatActivity() {
         deviceState.addStreamUrlListener(streamUrlListener)
         deviceState.addStreamingListener(streamingListener)
         deviceState.addLastRecordedFileListener(lastRecordedFileListener)
+        deviceState.addTimelapseListener(timelapseListener)
         onStreamingStateChanged(deviceState.isStreaming)
         onRecordingStateChanged(deviceState.recordingState)
     }
@@ -375,13 +380,28 @@ class MainActivity : AppCompatActivity() {
     private fun updateStreamStatus() {
         val recording = deviceState.recordingState == DeviceState.RecordingState.RECORDING
         val url = deviceState.streamUrl
-        binding.streamStatus.text =
+        val base =
             when {
                 recording && url != null -> getString(R.string.status_recording, url)
                 deviceState.isStreaming && url != null -> getString(R.string.status_streaming, url)
                 url != null -> getString(R.string.status_camera_off)
                 else -> getString(R.string.status_starting)
             }
+        val timelapse =
+            when {
+                deviceState.timelapseEncoding -> {
+                    "\nCreating timelapse video… ${deviceState.timelapseProgress}%"
+                }
+
+                deviceState.timelapseFrames > 0 -> {
+                    "\nTimelapse: ${deviceState.timelapseFrames} frames captured"
+                }
+
+                else -> {
+                    ""
+                }
+            }
+        binding.streamStatus.text = base + timelapse
     }
 
     /**
@@ -436,6 +456,7 @@ class MainActivity : AppCompatActivity() {
         deviceState.removeStreamUrlListener(streamUrlListener)
         deviceState.removeStreamingListener(streamingListener)
         deviceState.removeLastRecordedFileListener(lastRecordedFileListener)
+        deviceState.removeTimelapseListener(timelapseListener)
         if (bound) {
             unbindService(serviceConnection)
             bound = false

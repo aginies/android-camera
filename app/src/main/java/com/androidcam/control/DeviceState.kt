@@ -177,6 +177,52 @@ class DeviceState {
             _lastError.set(value)
         }
 
+    // --- Timelapse (interval capture) -----------------------------------------
+
+    // Number of JPEG frames captured for the current timelapse session.
+    private val _timelapseFrames = AtomicInteger(0)
+    val timelapseFrames: Int get() = _timelapseFrames.get()
+
+    // True while the captured frames are being assembled into a video.
+    private val _timelapseEncoding = AtomicBoolean(false)
+    val timelapseEncoding: Boolean get() = _timelapseEncoding.get()
+
+    // Video-creation progress, 0-100 (meaningful while [timelapseEncoding]).
+    private val _timelapseProgress = AtomicInteger(0)
+    val timelapseProgress: Int get() = _timelapseProgress.get()
+
+    private val timelapseListeners = CopyOnWriteArrayList<() -> Unit>()
+
+    /** Update the captured-frame count and notify listeners. */
+    fun setTimelapseFrames(count: Int) {
+        _timelapseFrames.set(count)
+        timelapseListeners.forEach { it() }
+    }
+
+    /** Record one more captured frame and notify listeners. */
+    fun addTimelapseFrame() {
+        _timelapseFrames.incrementAndGet()
+        timelapseListeners.forEach { it() }
+    }
+
+    /** Set the encoding state + progress and notify listeners. */
+    fun setTimelapseEncoding(
+        encoding: Boolean,
+        progress: Int,
+    ) {
+        _timelapseEncoding.set(encoding)
+        _timelapseProgress.set(progress)
+        timelapseListeners.forEach { it() }
+    }
+
+    fun addTimelapseListener(listener: () -> Unit) {
+        timelapseListeners.add(listener)
+    }
+
+    fun removeTimelapseListener(listener: () -> Unit) {
+        timelapseListeners.remove(listener)
+    }
+
     // --- Screen timeout ---------------------------------------------------------
 
     private val _screenTimeoutEnabled = AtomicBoolean(true)

@@ -9,12 +9,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.ServiceInfo
+import android.media.MediaMuxer
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.Uri
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.util.Size
 import androidx.camera.video.FileDescriptorOutputOptions
 import androidx.camera.video.FileOutputOptions
 import androidx.camera.video.Quality
@@ -25,16 +27,14 @@ import com.androidcam.AppApplication
 import com.androidcam.R
 import com.androidcam.camera.CameraManager
 import com.androidcam.camera.FrameCapturer
+import com.androidcam.camera.ResolutionDetector
 import com.androidcam.control.DeviceState
 import com.androidcam.discovery.MdnsDiscovery
 import com.androidcam.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.io.File
@@ -94,8 +94,8 @@ class RecordingService :
 
     private val prefs: SharedPreferences by lazy { getSharedPreferences(PREFS_NAME, MODE_PRIVATE) }
 
-    private val schedulerScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private var intervalJob: Job? = null
+    // Background scope for assembling timelapse videos (blocking encode work).
+    private val encodeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private var binder: LocalBinder? = null
     private var cameraManager: CameraManager? = null
@@ -112,9 +112,13 @@ class RecordingService :
     // keeps running while the screen is off / the app is backgrounded.
     private val cameraLifecycle = ServiceLifecycleOwner()
 
-    // Interval-recording settings
+    // Timelapse (interval capture) settings
     private var intervalEnabled = false
     private var intervalSeconds = DEFAULT_INTERVAL_SECONDS
+
+    // Active timelapse session (null when disabled): captures one JPEG from
+    // the stream every [intervalSeconds].
+    private var timelapseCapture: TimelapseCapture? = null
 
     // Where recordings are written: STORAGE_INTERNAL, STORAGE_EXTERNAL, or STORAGE_CUSTOM
     private var storageLocation = STORAGE_INTERNAL
@@ -124,6 +128,10 @@ class RecordingService :
 
     // Recording resolution, applied when the camera (re)starts.
     private var requestedQuality: Quality = Quality.FHD
+
+    // Resolutions the active camera can actually record at (quality → exact
+    // size), detected via CameraX capabilities. Highest first.
+    private var supportedResolutions: List<Pair<Quality, Size>> = emptyList()
 
     override fun onCreate() {
         super.onCreate()
@@ -140,7 +148,8 @@ class RecordingService :
         cameraLifecycle.markStarted()
         startServerAndDiscovery()
         registerNetworkCallback()
-        startIntervalScheduler()
+        resumeTimelapseSession()
+        refreshSupportedResolutions()
         updateNotification()
         Timber.i("Service created (token: $token, camera off)")
     }
@@ -251,12 +260,12 @@ class RecordingService :
     }
 
     /**
-     * Set the interval-recording settings. Persists them and restarts the
-     * scheduler so the new cadence takes effect immediately. Each recording is
-     * open-ended (infinite) — it runs until stopped manually or the feature is
-     * disabled; the interval re-arms recording if it has stopped.
+     * Set the timelapse (interval capture) settings. Persists them and starts
+     * or ends the capture session immediately: while enabled, one JPEG is
+     * captured every [intervalSec] seconds; when disabled, the captured frames
+     * are assembled into a timelapse video and deleted.
      */
-    fun updateIntervalSettings(
+    override fun updateIntervalSettings(
         enabled: Boolean,
         intervalSec: Int,
     ) {
@@ -267,9 +276,22 @@ class RecordingService :
             .putBoolean(KEY_INTERVAL_ENABLED, intervalEnabled)
             .putInt(KEY_INTERVAL_SECONDS, intervalSeconds)
             .apply()
-        startIntervalScheduler()
-        Timber.i("Interval recording: enabled=$intervalEnabled every ${intervalSeconds}s (open-ended)")
+        if (enabled) {
+            val capture = timelapseCapture
+            if (capture != null) {
+                // Running session keeps its frames; only the cadence changes.
+                capture.intervalMs = intervalSeconds.toLong() * 1000L
+            } else {
+                startTimelapseSession()
+            }
+        } else {
+            stopTimelapseSession()
+        }
+        Timber.i("Timelapse: enabled=$intervalEnabled every ${intervalSeconds}s")
     }
+
+    /** Current interval (timelapse) settings for the control API. */
+    override fun intervalSettings(): Pair<Boolean, Int> = intervalEnabled to intervalSeconds
 
     /** Start the stream server + mDNS advertising with the current [token]. */
     private fun startServerAndDiscovery() {
@@ -301,36 +323,131 @@ class RecordingService :
         deviceState.setStreamUrl(null)
     }
 
-    // --- Interval recording scheduler -----------------------------------------
+    // --- Timelapse (interval capture) -----------------------------------------
 
     /**
-     * (Re)start the interval-recording scheduler. When [intervalEnabled], it
-     * keeps an open-ended (infinite) recording running: if recording is not
-     * active, it starts one; the interval re-checks and re-arms it. Runs on the
-     * main dispatcher so it is serialized with manual recording actions.
+     * Timelapse (a.k.a. interval recording): while enabled, one JPEG is
+     * captured from the stream every [intervalSeconds] ([TimelapseCapture]).
+     * When the session ends — disabled, streaming stopped, or leftover frames
+     * found at startup — the frames are assembled into an MP4 timelapse
+     * ([TimelapseEncoder]) and then deleted.
      */
-    private fun startIntervalScheduler() {
-        stopIntervalScheduler()
-        if (!intervalEnabled) return
-        intervalJob =
-            schedulerScope.launch {
-                while (isActive) {
-                    if (!intervalEnabled) break
-                    // Only record while the camera is live (streaming on).
-                    if (deviceState.isStreaming &&
-                        deviceState.recordingState != DeviceState.RecordingState.RECORDING
-                    ) {
-                        startRecording()
-                    }
-                    delay(intervalSeconds.toLong() * 1000)
-                }
+    private fun startTimelapseSession() {
+        if (timelapseCapture != null) return
+        timelapseCapture =
+            TimelapseCapture(framesDir(), intervalSeconds.toLong() * 1000L) {
+                deviceState.addTimelapseFrame()
+            }.also {
+                deviceState.setTimelapseFrames(it.frameCount())
+                Timber.i("Timelapse session started (every ${intervalSeconds}s)")
             }
     }
 
-    private fun stopIntervalScheduler() {
-        intervalJob?.cancel()
-        intervalJob = null
+    /** End the active session, assembling the captured frames into a video. */
+    private fun stopTimelapseSession() {
+        if (timelapseCapture == null) return
+        timelapseCapture = null
+        finishTimelapse()
     }
+
+    /**
+     * Assemble the captured frames into a timelapse video on a background
+     * thread, then delete the frames. No-op when there are no frames.
+     */
+    private fun finishTimelapse() {
+        val frames =
+            framesDir()
+                .listFiles { f -> f.name.endsWith(".jpg") }
+                ?.sortedBy { it.name }
+                ?: emptyList()
+        if (frames.isEmpty()) {
+            framesDir().delete()
+            deviceState.setTimelapseFrames(0)
+            return
+        }
+        deviceState.setTimelapseFrames(frames.size)
+        encodeScope.launch {
+            deviceState.setTimelapseEncoding(true, 0)
+            val ok =
+                try {
+                    createTimelapseVideo(frames)
+                } catch (e: Exception) {
+                    Timber.e(e, "Timelapse encoding failed")
+                    deviceState.lastError = "Timelapse encoding failed: ${e.message}"
+                    false
+                }
+            if (ok) {
+                frames.forEach { it.delete() }
+                framesDir().delete()
+                deviceState.setTimelapseFrames(0)
+            } else {
+                deviceState.lastError = deviceState.lastError ?: "Timelapse encoding failed"
+            }
+            deviceState.setTimelapseEncoding(false, 0)
+        }
+    }
+
+    /** Resume a persisted session, or collapse frames left by a killed one. */
+    private fun resumeTimelapseSession() {
+        if (intervalEnabled) {
+            startTimelapseSession()
+        } else if (framesDir().listFiles()?.isNotEmpty() == true) {
+            Timber.i("Collapsing leftover timelapse frames from a previous session")
+            finishTimelapse()
+        }
+    }
+
+    private fun framesDir(): File = File(filesDir, "timelapse_frames")
+
+    /** Encode [frames] into an MP4 in the configured storage location. */
+    private fun createTimelapseVideo(frames: List<File>): Boolean {
+        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val fileName = "timelapse_$timestamp.mp4"
+        return if (storageLocation == STORAGE_CUSTOM) {
+            val treeUri = customTreeUri ?: return false
+            val dir = DocumentFile.fromTreeUri(this, treeUri) ?: return false
+            val doc = dir.createFile("video/mp4", fileName) ?: return false
+            val pfd = contentResolver.openFileDescriptor(doc.uri, "w") ?: return false
+            val muxer = MediaMuxer(pfd.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            try {
+                val ok = encodeAndReport(frames, muxer)
+                if (ok) {
+                    deviceState.setLastRecordedFile(doc.uri.toString())
+                    deviceState.incrementRecordedVideos()
+                    Timber.i("Timelapse saved (custom): ${doc.uri}")
+                } else {
+                    doc.delete()
+                }
+                ok
+            } finally {
+                muxer.release()
+                pfd.close()
+            }
+        } else {
+            val outputDir = videosDir().apply { mkdirs() }
+            val file = File(outputDir, fileName)
+            val muxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            try {
+                val ok = encodeAndReport(frames, muxer)
+                if (ok) {
+                    deviceState.setLastRecordedFile(file.absolutePath)
+                    deviceState.incrementRecordedVideos()
+                    Timber.i("Timelapse saved: ${file.absolutePath}")
+                } else {
+                    file.delete()
+                }
+                ok
+            } finally {
+                muxer.release()
+            }
+        }
+    }
+
+    /** Encode [frames] into [muxer], reporting progress to [DeviceState]. */
+    private fun encodeAndReport(frames: List<File>, muxer: MediaMuxer): Boolean =
+        TimelapseEncoder.encode(frames, muxer) { done, total ->
+            deviceState.setTimelapseEncoding(true, done * 100 / total)
+        }
 
     // --- Streaming (camera on/off) --------------------------------------------
 
@@ -344,6 +461,7 @@ class RecordingService :
         val capturer =
             FrameCapturer(deviceState) { jpeg ->
                 streamServer?.publishFrame(jpeg)
+                timelapseCapture?.onFrame(jpeg)
             }
         frameCapturer = capturer
         cameraManager =
@@ -373,6 +491,8 @@ class RecordingService :
     override fun stopStreaming() {
         if (!deviceState.isStreaming) return
         stopRecording()
+        // End any active timelapse session and assemble its frames.
+        stopTimelapseSession()
         cameraManager?.stopCamera()
         cameraManager = null
         frameCapturer = null
@@ -474,6 +594,7 @@ class RecordingService :
 
     override fun switchCamera() {
         cameraManager?.switchCamera()
+        refreshSupportedResolutions()
     }
 
     override fun setCameraFacing(facing: String) {
@@ -483,6 +604,7 @@ class RecordingService :
                 else -> DeviceState.CameraFacing.BACK
             }
         cameraManager?.setCameraFacing(target)
+        refreshSupportedResolutions()
     }
 
     override fun toggleTorch(): Boolean = cameraManager?.toggleTorch() ?: false
@@ -491,12 +613,11 @@ class RecordingService :
         val parts = resolution.lowercase().split("x")
         val w = parts.getOrNull(0)?.toIntOrNull() ?: 0
         val h = parts.getOrNull(1)?.toIntOrNull() ?: 0
+        // Prefer an exact match against the detected sizes; fall back to the
+        // nearest quality tier for unknown sizes.
         val quality =
-            when (resolution.lowercase()) {
-                "1280x720" -> Quality.HD
-                "640x480" -> Quality.SD
-                else -> Quality.FHD
-            }
+            supportedResolutions.firstOrNull { it.second.width == w && it.second.height == h }?.first
+                ?: nearestQuality(w, h)
         if (w > 0) deviceState.videoWidth = w
         if (h > 0) deviceState.videoHeight = h
         requestedQuality = quality
@@ -504,10 +625,44 @@ class RecordingService :
             when (quality) {
                 Quality.HD -> "HD"
                 Quality.SD -> "SD"
+                Quality.UHD -> "UHD"
                 else -> "FHD"
             }
         prefs.edit().putString(KEY_RESOLUTION, qualityName).apply()
         cameraManager?.setVideoQuality(quality)
+    }
+
+    /** Supported resolutions as "WxH" strings, highest first. */
+    override fun supportedResolutions(): List<String> = supportedResolutions.map { "${it.second.width}x${it.second.height}" }
+
+    /** Re-detect the supported resolutions for the current camera facing. */
+    private fun refreshSupportedResolutions() {
+        ResolutionDetector.detect(this, deviceState.facing) { pairs ->
+            supportedResolutions = pairs
+            Timber.d("Supported resolutions: ${pairs.map { it.second }}")
+        }
+    }
+
+    /** Map a requested size to the nearest CameraX quality tier. */
+    private fun nearestQuality(
+        w: Int,
+        h: Int,
+    ): Quality {
+        if (w <= 0 || h <= 0) return requestedQuality
+        val canonical =
+            listOf(
+                Quality.SD to Size(640, 480),
+                Quality.HD to Size(1280, 720),
+                Quality.FHD to Size(1920, 1080),
+                Quality.UHD to Size(3840, 2160),
+            )
+        return canonical
+            .minByOrNull { (quality, size) ->
+                val dx = size.width - w
+                val dy = size.height - h
+                dx * dx + dy * dy
+            }!!
+            .first
     }
 
     // --- Storage location -----------------------------------------------------
@@ -569,11 +724,10 @@ class RecordingService :
 
     override fun onDestroy() {
         stopStreaming()
-        stopIntervalScheduler()
         unregisterNetworkCallback()
         stopServerAndDiscovery()
         cameraLifecycle.markDestroyed()
-        schedulerScope.cancel()
+        encodeScope.cancel()
         super.onDestroy()
     }
 

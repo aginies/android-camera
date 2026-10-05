@@ -18,9 +18,9 @@
     <string name="settings_title">Settings</string>
     <string name="settings_token_label">Token</string>
     <string name="settings_token_hint">Auth token</string>
-    <string name="settings_interval_title">Interval recording</string>
+    <string name="settings_interval_title">Timelapse (interval capture)</string>
     <string name="settings_interval_label">Interval (seconds)</string>
-    <string name="settings_interval_hint">Re-arm continuous recording every N seconds</string>
+    <string name="settings_interval_hint">Capture one photo every N seconds; a timelapse video is created when stopped (photos are deleted afterwards)</string>
     <string name="settings_storage_label">Video storage</string>
     <string name="settings_storage_internal">Internal (app)</string>
     <string name="settings_storage_external">External (shared)</string>

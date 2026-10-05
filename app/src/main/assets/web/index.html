@@ -147,6 +147,25 @@
             line-height: 1.6;
         }
         .status-info span { color: #fff; }
+        .timelapse-progress {
+            margin-top: 8px;
+            font-size: 0.8rem;
+            color: #aaa;
+        }
+        .timelapse-progress .bar {
+            height: 8px;
+            background: #2a2a3a;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 4px;
+        }
+        .timelapse-progress .bar > div {
+            height: 100%;
+            width: 0;
+            background: #4ecdc4;
+            border-radius: 4px;
+            transition: width 0.3s;
+        }
         .log-panel {
             background: #0f0f1a;
             border-radius: 8px;
@@ -226,9 +245,7 @@
                 <div class="select-group">
                     <label>Recording Resolution</label>
                     <select id="resolution" onchange="setResolution()">
-                        <option value="1920x1080">1080p</option>
-                        <option value="1280x720">720p</option>
-                        <option value="640x480">480p</option>
+                        <option value="">Detecting…</option>
                     </select>
                 </div>
                 <div class="select-group">
@@ -257,6 +274,10 @@
             <div class="control-section">
                 <h3>Status</h3>
                 <div class="status-info" id="statusInfo">No connection</div>
+                <div class="timelapse-progress" id="timelapseProgress" style="display:none">
+                    <span id="timelapseProgressLabel">Creating timelapse video…</span>
+                    <div class="bar"><div id="timelapseProgressBar"></div></div>
+                </div>
             </div>
 
             <div class="control-section">
@@ -397,8 +418,10 @@
                 ['Resolution', data.resolution || '1920x1080'],
                 ['Storage', data.storageLocation || 'internal'],
                 ['Videos saved', data.recordedVideos ?? 0],
+                ['Timelapse', data.intervalEnabled ? `on (every ${data.intervalSeconds ?? 60}s)` : 'off'],
                 ['Screen timeout', data.screenTimeoutEnabled ? `${data.screenTimeoutSeconds}s` : 'off'],
             ];
+            if (data.timelapseFrames > 0) fields.push(['Timelapse frames', data.timelapseFrames]);
             if (data.error) fields.push(['Error', data.error]);
             for (const [label, value] of fields) {
                 const row = document.createElement('div');
@@ -410,6 +433,19 @@
                 row.appendChild(valueSpan);
                 info.appendChild(row);
             }
+            // Timelapse creation progress bar.
+            const tlWrap = document.getElementById('timelapseProgress');
+            const tlBar = document.getElementById('timelapseProgressBar');
+            const tlLabel = document.getElementById('timelapseProgressLabel');
+            if (data.timelapseEncoding === true) {
+                const pct = data.timelapseProgress ?? 0;
+                tlWrap.style.display = '';
+                tlBar.style.width = `${pct}%`;
+                tlLabel.textContent = `Creating timelapse video… ${pct}%`;
+            } else {
+                tlWrap.style.display = 'none';
+            }
+
             const streaming = data.streaming === true;
             const recording = data.recording === 'recording';
 
@@ -429,6 +465,28 @@
                 storageSel.value = data.storageLocation || 'internal';
             }
 
+            // Rebuild the resolution dropdown from the device's detected
+            // capabilities (the hardcoded options remain as a fallback).
+            const resSel = document.getElementById('resolution');
+            if (resSel && Array.isArray(data.supportedResolutions) && data.supportedResolutions.length > 0) {
+                const current = resSel.value;
+                resSel.innerHTML = '';
+                for (const size of data.supportedResolutions) {
+                    const opt = document.createElement('option');
+                    opt.value = size;
+                    opt.textContent = resLabel(size);
+                    resSel.appendChild(opt);
+                }
+                // Keep the current selection visible if detection missed it.
+                if (current && ![...resSel.options].some(o => o.value === current)) {
+                    const opt = document.createElement('option');
+                    opt.value = current;
+                    opt.textContent = current + ' (current)';
+                    resSel.prepend(opt);
+                }
+                if (data.resolution) resSel.value = data.resolution;
+            }
+
             // Show where a new recording was saved, for 5 seconds.
             if (data.lastRecordedFile && data.lastRecordedFile !== lastSeenRecordedFile) {
                 lastSeenRecordedFile = data.lastRecordedFile;
@@ -438,6 +496,14 @@
 
         let lastSeenRecordedFile = '';
         let recordedFileTimer = null;
+
+        function resLabel(size) {
+            const m = size.match(/^(\d+)x(\d+)$/);
+            if (!m) return size;
+            const h = parseInt(m[2], 10);
+            const names = { 2160: '4K', 1080: '1080p', 720: '720p', 480: '480p' };
+            return names[h] ? `${names[h]} (${size})` : size;
+        }
         function showRecordedFile(path) {
             const el = document.getElementById('recordedFileOverlay');
             if (!el) return;
@@ -509,6 +575,7 @@
 
         async function setResolution() {
             const res = document.getElementById('resolution').value;
+            if (!res) return;
             try {
                 await api(`/api/control/resolution/${res}`);
                 log(`Resolution: ${res}`);
