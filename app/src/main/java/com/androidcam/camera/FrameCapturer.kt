@@ -138,7 +138,10 @@ class FrameCapturer(
         jpeg: ByteArray,
         degrees: Int,
     ): ByteArray {
-        val src = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return jpeg
+        // inMutable is required: Canvas(bitmap) throws on immutable bitmaps,
+        // and decodeByteArray returns immutable ones by default.
+        val opts = BitmapFactory.Options().apply { inMutable = true }
+        val src = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, opts) ?: return jpeg
         val matrix = Matrix().apply { postRotate(degrees.toFloat()) }
         val rotated = Bitmap.createBitmap(src, 0, 0, src.width, src.height, matrix, true)
         if (rotated !== src) src.recycle()
@@ -153,7 +156,10 @@ class FrameCapturer(
 
     /** Decode [jpeg], burn in the timestamp, and re-encode. */
     private fun overlayTimestamp(jpeg: ByteArray): ByteArray {
-        val bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return jpeg
+        // inMutable is required: Canvas(bitmap) throws on immutable bitmaps,
+        // and decodeByteArray returns immutable ones by default.
+        val opts = BitmapFactory.Options().apply { inMutable = true }
+        val bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, opts) ?: return jpeg
         drawTimestamp(Canvas(bitmap), bitmap.height)
         val out = ByteArrayOutputStream()
         bitmap.compress(Bitmap.CompressFormat.JPEG, deviceState.jpegQuality, out)
@@ -162,7 +168,10 @@ class FrameCapturer(
     }
 
     /** Draw the timestamp text at the bottom-left of [canvas]. */
-    private fun drawTimestamp(canvas: Canvas, height: Int) {
+    private fun drawTimestamp(
+        canvas: Canvas,
+        height: Int,
+    ) {
         val text = timestampText(height) ?: return
         val margin = height * 0.03f
         canvas.drawBitmap(text, margin, (height - margin - text.height).toFloat(), null)

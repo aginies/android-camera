@@ -141,25 +141,38 @@
             margin-bottom: 4px;
         }
         .slider-group input[type="range"] { width: 100%; }
-        .status-info {
+        .status-bar {
+            background: #16213e;
+            padding: 8px 24px;
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 6px 24px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }
+        .status-bar .status-info {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 2px 16px;
             font-size: 0.85rem;
             color: #aaa;
-            line-height: 1.6;
         }
-        .status-info span { color: #fff; }
-        .timelapse-progress {
-            margin-top: 8px;
+        .status-bar .status-info span { color: #fff; }
+        .status-bar .timelapse-progress {
+            display: flex;
+            align-items: center;
+            gap: 8px;
             font-size: 0.8rem;
             color: #aaa;
         }
-        .timelapse-progress .bar {
+        .status-bar .timelapse-progress .bar {
+            width: 120px;
             height: 8px;
             background: #2a2a3a;
             border-radius: 4px;
             overflow: hidden;
-            margin-top: 4px;
         }
-        .timelapse-progress .bar > div {
+        .status-bar .timelapse-progress .bar > div {
             height: 100%;
             width: 0;
             background: #4ecdc4;
@@ -181,7 +194,7 @@
     </style>
 </head>
 <body>
-    <div id="recordedFileOverlay" style="display:none; position:fixed; top:64px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,0.85); color:#fff; padding:10px 16px; border-radius:8px; z-index:1000; font-size:0.9rem; max-width:90%; word-break:break-all;"></div>
+    <div id="recordedFileOverlay" style="display:none; position:fixed; top:112px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,0.85); color:#fff; padding:10px 16px; border-radius:8px; z-index:1000; font-size:0.9rem; max-width:90%; word-break:break-all;"></div>
     <header>
         <h1>📹 AndroidCam Remote</h1>
         <div style="display:flex; align-items:center; gap:12px;">
@@ -190,6 +203,14 @@
             <span id="statusText">Disconnected</span>
         </div>
     </header>
+
+    <div class="status-bar">
+        <div class="status-info" id="statusInfo">No connection</div>
+        <div class="timelapse-progress" id="timelapseProgress" style="display:none">
+            <span id="timelapseProgressLabel">Creating timelapse video…</span>
+            <div class="bar"><div id="timelapseProgressBar"></div></div>
+        </div>
+    </div>
 
     <div class="main">
         <div class="video-panel">
@@ -206,10 +227,6 @@
             <div class="control-section">
                 <h3>Connection</h3>
                 <div class="select-group">
-                    <label>Device</label>
-                    <input type="text" id="deviceIp" class="text-input" readonly tabindex="-1">
-                </div>
-                <div class="select-group">
                     <label>Token</label>
                     <input type="text" id="deviceToken" placeholder="12-char token" class="text-input">
                 </div>
@@ -217,15 +234,11 @@
             </div>
 
             <div class="control-section">
-                <h3>Streaming</h3>
+                <h3>Streaming / Recording</h3>
                 <button class="btn btn-success" id="btnStream" onclick="toggleStreaming()" disabled>
                     ▶ Start Streaming
                 </button>
-            </div>
-
-            <div class="control-section">
-                <h3>Recording</h3>
-                <button class="btn btn-danger" id="btnRecord" onclick="toggleRecording()" disabled>
+                <button class="btn btn-danger" id="btnRecord" onclick="toggleRecording()" disabled style="margin-top: 8px">
                     ⏺ Start Recording
                 </button>
             </div>
@@ -293,15 +306,6 @@
                     <input type="range" id="jpegQuality" min="10" max="100" value="80"
                            oninput="document.getElementById('jpegQualityValue').textContent=this.value"
                            onchange="setJpegQuality()">
-                </div>
-            </div>
-
-            <div class="control-section">
-                <h3>Status</h3>
-                <div class="status-info" id="statusInfo">No connection</div>
-                <div class="timelapse-progress" id="timelapseProgress" style="display:none">
-                    <span id="timelapseProgressLabel">Creating timelapse video…</span>
-                    <div class="bar"><div id="timelapseProgressBar"></div></div>
                 </div>
             </div>
 
@@ -667,8 +671,6 @@
             } catch (e) { log(`Screen timeout: ${e.message}`, 'error'); }
         }
 
-        // Show the device address (the page is served by the device itself)
-        document.getElementById('deviceIp').value = window.location.origin;
         // Restore saved token
         const savedToken = localStorage.getItem('androidcam_token');
         if (savedToken) document.getElementById('deviceToken').value = savedToken;

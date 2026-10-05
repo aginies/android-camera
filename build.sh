@@ -15,13 +15,14 @@
 
 set -euo pipefail
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+# Colors (ANSI-C quoting so the vars hold real escape chars — works in both
+# echo and heredocs)
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[1;33m'
+_BLUE=$'\033[0;34m' # reserved palette entry
+CYAN=$'\033[0;36m'
+NC=$'\033[0m' # No Color
 
 # Project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

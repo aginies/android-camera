@@ -75,6 +75,10 @@ class MainActivity : AppCompatActivity() {
                 service = localBinder.service
                 bound = true
                 localBinder.service.attachPreview(binding.previewView)
+                // The service may have started (or a remote client changed
+                // settings) while we were unbound — refresh the controls now
+                // that the service state is reachable.
+                onRecordingStateChanged(deviceState.recordingState)
                 Timber.d("Bound to RecordingService")
             }
 
@@ -104,6 +108,10 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread { updateStreamStatus() }
     }
 
+    private val intervalSettingsListener: (Boolean, Int) -> Unit = { _, _ ->
+        runOnUiThread { onRecordingStateChanged(deviceState.recordingState) }
+    }
+
     private val screenTimeoutHandler = Handler(Looper.getMainLooper())
     private var screenTimeoutRunnable: Runnable? = null
 
@@ -125,6 +133,7 @@ class MainActivity : AppCompatActivity() {
         deviceState.addStreamingListener(streamingListener)
         deviceState.addLastRecordedFileListener(lastRecordedFileListener)
         deviceState.addTimelapseListener(timelapseListener)
+        deviceState.addIntervalSettingsListener(intervalSettingsListener)
         onStreamingStateChanged(deviceState.isStreaming)
         onRecordingStateChanged(deviceState.recordingState)
     }
@@ -386,7 +395,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun onRecordingStateChanged(state: DeviceState.RecordingState) {
         val recording = state == DeviceState.RecordingState.RECORDING
-        val timelapseOn = service?.getIntervalSettings()?.first == true
+        val timelapseOn = deviceState.intervalEnabled
         binding.recordButton.setText(
             when {
                 recording -> R.string.stop_recording
@@ -410,10 +419,25 @@ class MainActivity : AppCompatActivity() {
         val url = deviceState.streamUrl
         val base =
             when {
-                recording && url != null -> getString(R.string.status_recording, url)
-                deviceState.isStreaming && url != null -> getString(R.string.status_streaming, url)
-                url != null -> getString(R.string.status_camera_off)
-                else -> getString(R.string.status_starting)
+                recording && url != null -> {
+                    if (deviceState.timelapseRecording) {
+                        getString(R.string.status_recording_timelapse, url)
+                    } else {
+                        getString(R.string.status_recording, url)
+                    }
+                }
+
+                deviceState.isStreaming && url != null -> {
+                    getString(R.string.status_streaming, url)
+                }
+
+                url != null -> {
+                    getString(R.string.status_camera_off)
+                }
+
+                else -> {
+                    getString(R.string.status_starting)
+                }
             }
         val timelapse =
             when {
@@ -485,6 +509,7 @@ class MainActivity : AppCompatActivity() {
         deviceState.removeStreamingListener(streamingListener)
         deviceState.removeLastRecordedFileListener(lastRecordedFileListener)
         deviceState.removeTimelapseListener(timelapseListener)
+        deviceState.removeIntervalSettingsListener(intervalSettingsListener)
         if (bound) {
             unbindService(serviceConnection)
             bound = false

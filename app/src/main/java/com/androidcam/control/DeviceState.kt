@@ -38,6 +38,20 @@ class DeviceState {
         recordingListeners.remove(listener)
     }
 
+    // True while the active recording is a timelapse (frames only, no full
+    // video), so the UI can show "Timelapse" instead of "Recording".
+    private val _timelapseRecording = AtomicBoolean(false)
+    val timelapseRecording: Boolean get() = _timelapseRecording.get()
+
+    /**
+     * Set whether the active recording is a timelapse. No notification: it is
+     * always set together with a recording-state change, which drives the UI
+     * refresh.
+     */
+    fun setTimelapseRecording(value: Boolean) {
+        _timelapseRecording.set(value)
+    }
+
     private val _recordedVideosCount = AtomicInteger(0)
     val recordedVideosCount: Int get() = _recordedVideosCount.get()
 
@@ -178,6 +192,35 @@ class DeviceState {
         }
 
     // --- Timelapse (interval capture) -----------------------------------------
+
+    // Mirrors the service's interval (timelapse) settings so the UI can react
+    // to changes made from anywhere (app, web UI, API) without a service
+    // reference.
+    private val _intervalEnabled = AtomicBoolean(false)
+    val intervalEnabled: Boolean get() = _intervalEnabled.get()
+
+    private val _intervalSeconds = AtomicInteger(60)
+    val intervalSeconds: Int get() = _intervalSeconds.get()
+
+    private val intervalSettingsListeners = CopyOnWriteArrayList<(Boolean, Int) -> Unit>()
+
+    /** Update the interval (timelapse) settings and notify listeners. */
+    fun setIntervalSettings(
+        enabled: Boolean,
+        seconds: Int,
+    ) {
+        _intervalEnabled.set(enabled)
+        _intervalSeconds.set(seconds)
+        intervalSettingsListeners.forEach { it(enabled, seconds) }
+    }
+
+    fun addIntervalSettingsListener(listener: (Boolean, Int) -> Unit) {
+        intervalSettingsListeners.add(listener)
+    }
+
+    fun removeIntervalSettingsListener(listener: (Boolean, Int) -> Unit) {
+        intervalSettingsListeners.remove(listener)
+    }
 
     // Number of JPEG frames captured for the current timelapse session.
     private val _timelapseFrames = AtomicInteger(0)

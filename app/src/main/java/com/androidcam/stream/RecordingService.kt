@@ -43,6 +43,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Foreground service that owns the full pipeline:
@@ -86,6 +87,9 @@ class RecordingService :
         const val STORAGE_INTERNAL = "internal"
         const val STORAGE_EXTERNAL = "external"
         const val STORAGE_CUSTOM = "custom"
+
+        // Prefix of the per-session timelapse frames directories.
+        private const val SESSION_DIR_PREFIX = "timelapse_frames_"
     }
 
     /** Binder so the activity can attach the preview view. */
@@ -111,6 +115,7 @@ class RecordingService :
     private var currentRecordingFile: File? = null
 
     /** True while a timelapse-only recording is active (no full video). */
+    @Volatile
     private var timelapseOnlyRecording = false
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
@@ -125,8 +130,19 @@ class RecordingService :
     private var jpegQuality = DEFAULT_JPEG_QUALITY
 
     // Active timelapse session (null when disabled): captures one JPEG from
-    // the stream every [intervalSeconds].
+    // the stream every [intervalSeconds]. @Volatile: written on the main
+    // thread, read on the frame-capturer executor thread.
+    @Volatile
     private var timelapseCapture: TimelapseCapture? = null
+
+    // Frames directory of the active session. Each session gets its own
+    // directory, so a background encode of a finished session can never read
+    // or delete frames belonging to a newer one.
+    private var activeSessionDir: File? = null
+
+    // Bumped on every new session; lets a finishing encode tell whether it is
+    // still the current session before resetting shared state (frame count).
+    private val timelapseSessionGeneration = AtomicInteger(0)
 
     // Where recordings are written: STORAGE_INTERNAL, STORAGE_EXTERNAL, or STORAGE_CUSTOM
     private var storageLocation = STORAGE_INTERNAL
@@ -176,6 +192,7 @@ class RecordingService :
             }
         intervalEnabled = prefs.getBoolean(KEY_INTERVAL_ENABLED, false)
         intervalSeconds = prefs.getInt(KEY_INTERVAL_SECONDS, DEFAULT_INTERVAL_SECONDS)
+        deviceState.setIntervalSettings(intervalEnabled, intervalSeconds)
         timestampEnabled = prefs.getBoolean(KEY_TIMESTAMP, false)
         deviceState.timestampEnabled = timestampEnabled
         jpegQuality = prefs.getInt(KEY_JPEG_QUALITY, DEFAULT_JPEG_QUALITY)
@@ -276,6 +293,10 @@ class RecordingService :
      * or ends the capture session immediately: while enabled, one JPEG is
      * captured every [intervalSec] seconds; when disabled, the captured frames
      * are assembled into a timelapse video and deleted.
+     *
+     * Toggling while a recording is active switches modes cleanly (timelapse
+     * replaces video and vice versa), so the app never ends up recording
+     * neither — or both.
      */
     override fun updateIntervalSettings(
         enabled: Boolean,
@@ -288,17 +309,41 @@ class RecordingService :
             .putBoolean(KEY_INTERVAL_ENABLED, intervalEnabled)
             .putInt(KEY_INTERVAL_SECONDS, intervalSeconds)
             .apply()
-        if (enabled) {
-            val capture = timelapseCapture
-            if (capture != null) {
-                // Running session keeps its frames; only the cadence changes.
-                capture.intervalMs = intervalSeconds.toLong() * 1000L
-            } else if (deviceState.recordingState == DeviceState.RecordingState.RECORDING) {
+        deviceState.setIntervalSettings(intervalEnabled, intervalSeconds)
+
+        val recording = deviceState.recordingState == DeviceState.RecordingState.RECORDING
+        when {
+            // A full video is recording and timelapse is being enabled: the
+            // timelapse mode replaces the video, so end it cleanly first.
+            enabled && recording && !timelapseOnlyRecording -> {
+                stopRecording()
                 startTimelapseSession()
+                timelapseOnlyRecording = true
+                deviceState.setTimelapseRecording(true)
+                deviceState.setRecordingState(DeviceState.RecordingState.RECORDING)
+                AppApplication.instance.acquireWakeLock()
+                updateNotification()
+                Timber.i("Timelapse recording started (every ${intervalSeconds}s, replaced video)")
             }
-            // Otherwise the session starts with the next recording.
-        } else {
-            stopTimelapseSession()
+
+            // A timelapse is recording and the feature is being disabled: end
+            // the recording cleanly (assembling the captured frames).
+            !enabled && recording && timelapseOnlyRecording -> {
+                stopRecording()
+            }
+
+            enabled -> {
+                val capture = timelapseCapture
+                if (capture != null) {
+                    // Running session keeps its frames; only the cadence changes.
+                    capture.intervalMs = intervalSeconds.toLong() * 1000L
+                }
+                // Otherwise the session starts with the next recording.
+            }
+
+            else -> {
+                stopTimelapseSession()
+            }
         }
         Timber.i("Timelapse: enabled=$intervalEnabled every ${intervalSeconds}s")
     }
@@ -369,12 +414,15 @@ class RecordingService :
      */
     private fun startTimelapseSession() {
         if (timelapseCapture != null) return
-        // Start from a clean slate so this video only contains frames from
-        // this session (leftovers from a previous one are dropped).
-        framesDir().listFiles()?.forEach { it.delete() }
+        // Each session gets its own frames directory, so a background encode
+        // of a finished session can never read or delete frames belonging to
+        // a new one.
+        val dir = newSessionDir()
+        activeSessionDir = dir
+        timelapseSessionGeneration.incrementAndGet()
         timelapseCapture =
             TimelapseCapture(
-                framesDir(),
+                dir,
                 intervalSeconds.toLong() * 1000L,
             ) {
                 deviceState.addTimelapseFrame()
@@ -388,21 +436,30 @@ class RecordingService :
     private fun stopTimelapseSession() {
         if (timelapseCapture == null) return
         timelapseCapture = null
-        finishTimelapse()
+        val dir = activeSessionDir
+        activeSessionDir = null
+        if (dir != null) finishTimelapse(dir, timelapseSessionGeneration.get())
     }
 
     /**
-     * Assemble the captured frames into a timelapse video on a background
-     * thread, then delete the frames. No-op when there are no frames.
+     * Assemble the frames in [dir] into a timelapse video on a background
+     * thread, then delete them. No-op when there are no frames.
+     *
+     * [generation] identifies the session; the completion block only resets
+     * the shared frame count (and clears errors) when this session is still
+     * the current one, so a slow encode never clobbers a newer session.
      */
-    private fun finishTimelapse() {
+    private fun finishTimelapse(
+        dir: File,
+        generation: Int,
+    ) {
         val frames =
-            framesDir()
+            dir
                 .listFiles { f -> f.name.endsWith(".jpg") }
                 ?.sortedBy { it.name }
                 ?: emptyList()
         if (frames.isEmpty()) {
-            framesDir().delete()
+            dir.delete()
             deviceState.setTimelapseFrames(0)
             return
         }
@@ -419,9 +476,11 @@ class RecordingService :
                 }
             if (ok) {
                 frames.forEach { it.delete() }
-                framesDir().delete()
-                deviceState.setTimelapseFrames(0)
-                deviceState.lastError = null
+                dir.delete()
+                if (timelapseSessionGeneration.get() == generation) {
+                    deviceState.setTimelapseFrames(0)
+                    deviceState.lastError = null
+                }
             } else {
                 deviceState.lastError = deviceState.lastError ?: "Timelapse encoding failed"
             }
@@ -429,14 +488,18 @@ class RecordingService :
         }
     }
 
-    /** Drop frames left by a previous (possibly killed) session. */
+    /** Drop frames left by previous (possibly killed) sessions. */
     private fun cleanupLeftoverFrames() {
-        val dir = framesDir()
-        dir.listFiles()?.forEach { it.delete() }
-        if (dir.exists()) dir.delete()
+        filesDir
+            .listFiles { f -> f.isDirectory && f.name.startsWith(SESSION_DIR_PREFIX) }
+            ?.forEach { dir ->
+                dir.listFiles()?.forEach { it.delete() }
+                dir.delete()
+            }
     }
 
-    private fun framesDir(): File = File(filesDir, "timelapse_frames")
+    /** Create a fresh frames directory for a new timelapse session. */
+    private fun newSessionDir(): File = File(filesDir, "$SESSION_DIR_PREFIX${System.currentTimeMillis()}")
 
     /** Encode [frames] into an MP4 in the configured storage location. */
     private fun createTimelapseVideo(frames: List<File>): Boolean {
@@ -556,6 +619,7 @@ class RecordingService :
         if (intervalEnabled) {
             startTimelapseSession()
             timelapseOnlyRecording = true
+            deviceState.setTimelapseRecording(true)
             deviceState.setRecordingState(DeviceState.RecordingState.RECORDING)
             AppApplication.instance.acquireWakeLock()
             updateNotification()
@@ -563,6 +627,7 @@ class RecordingService :
             return true
         }
         timelapseOnlyRecording = false
+        deviceState.setTimelapseRecording(false)
         val camera =
             cameraManager
                 ?: run {
@@ -637,6 +702,7 @@ class RecordingService :
 
     override fun stopRecording() {
         if (deviceState.recordingState != DeviceState.RecordingState.RECORDING) return
+        deviceState.setTimelapseRecording(false)
         if (timelapseOnlyRecording) {
             // No full video to stop; just end the timelapse capture.
             deviceState.setRecordingState(DeviceState.RecordingState.IDLE)

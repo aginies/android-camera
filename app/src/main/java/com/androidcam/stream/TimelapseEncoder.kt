@@ -197,9 +197,11 @@ object TimelapseEncoder {
                 outIdx >= 0 -> {
                     val buf = encoder.getOutputBuffer(outIdx)
                     if (info.size > 0 && buf != null && track[0] >= 0) {
-                        if (info.flags and MediaCodec.BUFFER_FLAG_SYNC_FRAME != 0) {
-                            info.presentationTimeUs = 0
-                        }
+                        // Keep the encoder's presentation timestamps as-is: they
+                        // are monotonically increasing (input PTS starts at 0 and
+                        // advances per frame). Resetting sync frames to 0 makes
+                        // MediaMuxer throw "timestamp is not monotonically
+                        // increasing" once a second keyframe is emitted.
                         muxer.writeSampleData(track[0], buf, info)
                     }
                     encoder.releaseOutputBuffer(outIdx, false)
