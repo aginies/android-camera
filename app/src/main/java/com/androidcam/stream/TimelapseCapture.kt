@@ -36,6 +36,7 @@ class TimelapseCapture(
         private const val TIMESTAMP_JPEG_QUALITY = 95
         private val TIMESTAMP_FORMAT = SimpleDateFormat("yyyy-MM-dd  HH:mm:ss", Locale.US)
     }
+
     init {
         dir.mkdirs()
     }

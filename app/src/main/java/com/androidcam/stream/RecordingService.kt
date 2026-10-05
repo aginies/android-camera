@@ -399,6 +399,7 @@ class RecordingService :
                 frames.forEach { it.delete() }
                 framesDir().delete()
                 deviceState.setTimelapseFrames(0)
+                deviceState.lastError = null
             } else {
                 deviceState.lastError = deviceState.lastError ?: "Timelapse encoding failed"
             }
@@ -480,6 +481,9 @@ class RecordingService :
      */
     override fun startStreaming() {
         if (deviceState.isStreaming) return
+        // Resume the timelapse session if the feature is enabled: the session
+        // ends with each stream stop, so it must be re-armed on restart.
+        if (intervalEnabled) startTimelapseSession()
         val capturer =
             FrameCapturer(deviceState) { jpeg ->
                 streamServer?.publishFrame(jpeg)

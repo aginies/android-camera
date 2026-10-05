@@ -83,9 +83,8 @@ object TimelapseEncoder {
                 scaled.recycle()
                 rgbToYuv(rgba, yuv, width, height, colorFormat)
 
-                val inIdx = encoder.dequeueInputBuffer(10_000)
+                val inIdx = awaitInputBuffer(encoder, muxer, track, frameIndex = index)
                 if (inIdx < 0) {
-                    Timber.e("Timelapse: encoder input buffer unavailable at frame $index")
                     failed = true
                     break
                 }
@@ -104,9 +103,11 @@ object TimelapseEncoder {
             }
 
             if (!failed) {
-                val inIdx = encoder.dequeueInputBuffer(10_000)
+                val inIdx = awaitInputBuffer(encoder, muxer, track, frameIndex = null)
                 if (inIdx >= 0) {
                     encoder.queueInputBuffer(inIdx, 0, 0, pts, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                } else {
+                    failed = true
                 }
                 drain(encoder, muxer, track, timeoutUs = 10_000, untilEos = true)
             }
@@ -129,6 +130,35 @@ object TimelapseEncoder {
             }
         }
         return !failed && encoded > 0
+    }
+
+    /**
+     * Wait for a free input buffer, draining output while waiting so the
+     * encoder's pipeline keeps moving. Returns the buffer index, or -1 after
+     * a ~1s budget (the encoder is stuck).
+     */
+    private fun awaitInputBuffer(
+        encoder: MediaCodec,
+        muxer: MediaMuxer,
+        track: IntArray,
+        frameIndex: Int?,
+    ): Int {
+        var inIdx = -1
+        var waited = 0
+        while (inIdx < 0 && waited < 100) {
+            inIdx = encoder.dequeueInputBuffer(10_000)
+            if (inIdx < 0) {
+                drain(encoder, muxer, track, timeoutUs = 0)
+                waited++
+            }
+        }
+        if (inIdx < 0) {
+            Timber.e(
+                "Timelapse: encoder input buffer unavailable " +
+                    if (frameIndex == null) "at end-of-stream" else "at frame $frameIndex"
+            )
+        }
+        return inIdx
     }
 
     /**
