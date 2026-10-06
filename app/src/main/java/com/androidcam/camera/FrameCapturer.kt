@@ -5,7 +5,6 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ImageFormat
-import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.YuvImage
@@ -76,24 +75,39 @@ class FrameCapturer(
     private var textBitmapSecond = 0L
     private var textBitmapHeight = 0
 
+    // Scratch buffers for NV21 unpack and rotation, confined to the single-thread frameExecutor.
+    private var scratchVRow: ByteArray? = null
+    private var scratchURow: ByteArray? = null
+    private var scratchRotatedNv21: ByteArray? = null
+
     override fun analyze(imageProxy: ImageProxy) {
         try {
             val now = System.nanoTime()
             if (now - lastFrameNanos.get() < MIN_FRAME_INTERVAL_NS) return
             lastFrameNanos.set(now)
 
-            val rotation = deviceState.rotationDegrees % 360
-            // One NV21 conversion per frame, shared by the JPEG path and the
-            // optional H.264 encoder feed.
+            val rotation = ((deviceState.rotationDegrees % 360) + 360) % 360
+            val srcW = imageProxy.width
+            val srcH = imageProxy.height
             val nv21 = imageProxyToNv21(imageProxy)
-            onYuvFrame?.invoke(nv21, imageProxy.width, imageProxy.height, rotation)
-            val jpeg = nv21ToJpeg(nv21, imageProxy.width, imageProxy.height)
-            val frame =
-                when {
-                    rotation == 0 && deviceState.timestampEnabled -> overlayTimestamp(jpeg)
-                    rotation == 0 -> jpeg
-                    else -> rotateJpeg(jpeg, rotation)
+
+            // Fast in-memory NV21 rotation (~1 ms) before compression. This eliminates
+            // the heavy JPEG decode + Bitmap matrix transform + second JPEG compression.
+            val (frameNv21, outW, outH) =
+                if (rotation == 0) {
+                    Triple(nv21, srcW, srcH)
+                } else {
+                    val rot = rotateNv21(nv21, srcW, srcH, rotation)
+                    val rw = if (rotation == 90 || rotation == 270) srcH else srcW
+                    val rh = if (rotation == 90 || rotation == 270) srcW else srcH
+                    Triple(rot, rw, rh)
                 }
+
+            // Raw NV21 feed for the H.264 RTSP encoder, already rotated (rotation = 0).
+            onYuvFrame?.invoke(frameNv21, outW, outH, 0)
+
+            val jpeg = nv21ToJpeg(frameNv21, outW, outH)
+            val frame = if (deviceState.timestampEnabled) overlayTimestamp(jpeg) else jpeg
             onFrame(frame)
         } catch (e: Exception) {
             Timber.e(e, "Frame processing failed")
@@ -160,9 +174,11 @@ class FrameCapturer(
         val halfWidth = width / 2
         val halfHeight = height / 2
         if (uvPixelStride == 1) {
-            // Separate U/V planes: bulk-copy each row, then interleave in RAM.
-            val vRow = ByteArray(halfWidth)
-            val uRow = ByteArray(halfWidth)
+            // Separate U/V planes: reuse scratch row buffers to eliminate allocations.
+            val vRow =
+                if (scratchVRow?.size == halfWidth) scratchVRow!! else ByteArray(halfWidth).also { scratchVRow = it }
+            val uRow =
+                if (scratchURow?.size == halfWidth) scratchURow!! else ByteArray(halfWidth).also { scratchURow = it }
             val vBuf = vBuffer.duplicate()
             val uBuf = uBuffer.duplicate()
             for (row in 0 until halfHeight) {
@@ -193,33 +209,84 @@ class FrameCapturer(
         return nv21
     }
 
-    /** Rotate a JPEG by [degrees] (90/180/270), stamping the timestamp if enabled. */
-    private fun rotateJpeg(
-        jpeg: ByteArray,
+    /** Rotate an NV21 buffer in RAM by [degrees] (90/180/270). */
+    private fun rotateNv21(
+        src: ByteArray,
+        w: Int,
+        h: Int,
         degrees: Int,
     ): ByteArray {
-        // inMutable is required: Canvas(bitmap) throws on immutable bitmaps,
-        // and decodeByteArray returns immutable ones by default.
-        val opts = BitmapFactory.Options().apply { inMutable = true }
-        val src = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, opts) ?: return jpeg
-        val matrix = Matrix().apply { postRotate(degrees.toFloat()) }
-        val rotated = Bitmap.createBitmap(src, 0, 0, src.width, src.height, matrix, true)
-        if (rotated !== src) src.recycle()
-        val finalBitmap =
-            if (deviceState.timestampEnabled) {
-                // Bitmap.createBitmap(..., matrix, ...) returns an immutable bitmap;
-                // copy to ARGB_8888 mutable before passing to Canvas.
-                val mutable = rotated.copy(Bitmap.Config.ARGB_8888, true)
-                if (mutable !== rotated) rotated.recycle()
-                drawTimestamp(Canvas(mutable), mutable.height)
-                mutable
+        val r = ((degrees % 360) + 360) % 360
+        if (r == 0) return src
+        val out =
+            if (scratchRotatedNv21?.size == src.size) {
+                scratchRotatedNv21!!
             } else {
-                rotated
+                ByteArray(src.size).also { scratchRotatedNv21 = it }
             }
-        val out = ByteArrayOutputStream()
-        finalBitmap.compress(Bitmap.CompressFormat.JPEG, deviceState.jpegQuality, out)
-        finalBitmap.recycle()
-        return out.toByteArray()
+        val ySize = w * h
+        val hw = w / 2
+        val hh = h / 2
+        when (r) {
+            180 -> {
+                for (y in 0 until h) {
+                    val srcRow = (h - 1 - y) * w
+                    val dstRow = y * w
+                    for (x in 0 until w) {
+                        out[dstRow + x] = src[srcRow + (w - 1 - x)]
+                    }
+                }
+                for (y in 0 until hh) {
+                    val srcRow = (hh - 1 - y) * w
+                    val dstRow = y * w
+                    for (x in 0 until hw) {
+                        val s = ySize + srcRow + (hw - 1 - x) * 2
+                        val d = ySize + dstRow + x * 2
+                        out[d] = src[s]
+                        out[d + 1] = src[s + 1]
+                    }
+                }
+            }
+
+            90 -> {
+                // 90° clockwise: out(x, y) = src(h-1-x, y); output is h x w.
+                val outW = h
+                for (y in 0 until w) {
+                    for (x in 0 until outW) {
+                        out[y * outW + x] = src[(h - 1 - x) * w + y]
+                    }
+                }
+                val outUw = outW / 2
+                for (cy in 0 until w / 2) {
+                    for (cx in 0 until outUw) {
+                        val s = ySize + (hh - 1 - cx) * w + cy * 2
+                        val d = ySize + cy * outW + cx * 2
+                        out[d] = src[s]
+                        out[d + 1] = src[s + 1]
+                    }
+                }
+            }
+
+            else -> {
+                // 270° clockwise (90° counter-clockwise): out(x, y) = src(x, w-1-y).
+                val outW = h
+                for (y in 0 until w) {
+                    for (x in 0 until outW) {
+                        out[y * outW + x] = src[x * w + (w - 1 - y)]
+                    }
+                }
+                val outUw = outW / 2
+                for (cy in 0 until w / 2) {
+                    for (cx in 0 until outUw) {
+                        val s = ySize + cx * w + (hw - 1 - cy) * 2
+                        val d = ySize + cy * outW + cx * 2
+                        out[d] = src[s]
+                        out[d + 1] = src[s + 1]
+                    }
+                }
+            }
+        }
+        return out
     }
 
     /** Decode [jpeg], burn in the timestamp, and re-encode. */

@@ -507,8 +507,11 @@ class RecordingService :
             )
         val ok = rtspServer!!.start(ipv4)
         if (ok) {
-            Timber.i("RTSP server started on rtsp://$ip:${rtspServer!!.controlPort}")
+            val rtspUrl = "rtsp://${ipv4.hostAddress}:${rtspServer!!.controlPort}/"
+            deviceState.setRtspUrl(rtspUrl)
+            Timber.i("RTSP server started on $rtspUrl")
         } else {
+            deviceState.setRtspUrl(null)
             Timber.w("RTSP server failed to start (ports busy)")
         }
     }
@@ -516,6 +519,7 @@ class RecordingService :
     private fun stopRtspServer() {
         rtspServer?.stop()
         rtspServer = null
+        deviceState.setRtspUrl(null)
     }
 
     /** JPEG compression quality for the stream (10-100). */
@@ -1302,6 +1306,7 @@ class RecordingService :
                 override fun onLost(network: Network) {
                     streamServer?.invalidateIpCache()
                     deviceState.setStreamUrl(null)
+                    deviceState.setRtspUrl(null)
                 }
 
                 override fun onAvailable(network: Network) {
@@ -1340,6 +1345,10 @@ class RecordingService :
         if (ip != "127.0.0.1") {
             deviceState.setStreamUrl("http://$ip:${deviceState.streamPort}/?token=$token")
             Timber.i("Stream URL updated: http://$ip:${deviceState.streamPort}")
+            val port = rtspServer?.controlPort
+            if (port != null && port > 0) {
+                deviceState.setRtspUrl("rtsp://$ip:$port/")
+            }
         }
     }
 

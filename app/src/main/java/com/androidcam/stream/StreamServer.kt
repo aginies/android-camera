@@ -31,7 +31,9 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import io.ktor.websocket.send
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -144,9 +146,6 @@ class StreamServer(
     companion object {
         private const val MJPEG_BOUNDARY = "--frame"
 
-        /** Idle poll interval for the MJPEG loop when no new frame is available. */
-        private const val MJPEG_IDLE_DELAY_MS = 50L
-
         /** How long a cached device IP stays valid before re-resolving. */
         private const val IP_CACHE_TTL_MS = 30_000L
 
@@ -170,12 +169,21 @@ class StreamServer(
     /** Latest JPEG frame; the MJPEG endpoint writes it when it changes. */
     private val latestFrame = AtomicReference<ByteArray?>(null)
 
+    /** Shared flow for streaming clients; zero-copy, event-driven, drops old frames on slow clients. */
+    private val frameFlow =
+        MutableSharedFlow<ByteArray>(
+            replay = 1,
+            extraBufferCapacity = 2,
+            onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        )
+
     /** Debug only: frame override so the capture pipeline (e.g. QR scan) can be tested without a camera. */
     private var debugFrame: ByteArray? = null
 
     /** Publish a new JPEG frame to the MJPEG stream. */
     fun publishFrame(jpegBytes: ByteArray) {
         latestFrame.set(jpegBytes)
+        frameFlow.tryEmit(jpegBytes)
     }
 
     /** Inject (or clear with empty string) a debug frame override. No-op in release builds. */
@@ -300,45 +308,24 @@ class StreamServer(
                 call.respondText("OK", ContentType.Text.Plain)
             }
 
-            // MJPEG stream, paced to the frame rate produced by FrameCapturer
+            // MJPEG stream, event-driven directly from the frame flow with zero intermediate copies
             get("/stream/mjpeg") {
                 if (!authorized(call)) return@get unauthorized(call)
                 call.respondOutputStream(
                     contentType =
                         ContentType("multipart", "x-mixed-replace").withParameter("boundary", MJPEG_BOUNDARY),
                 ) {
-                    var lastWritten: ByteArray? = null
                     try {
-                        while (true) {
-                            val frame = latestFrame.get()
-                            if (frame != null && frame !== lastWritten) {
-                                // Assemble the full multipart part in one pre-sized
-                                // buffer (exact final size, no resizing) and send it
-                                // as a single write.
-                                val contentLength = frame.size.toString().toByteArray()
-                                val part =
-                                    ByteArrayOutputStream(
-                                        MJPEG_BOUNDARY_LINE.size +
-                                            MJPEG_CONTENT_TYPE.size +
-                                            MJPEG_CONTENT_LENGTH_PREFIX.size +
-                                            contentLength.size +
-                                            MJPEG_HEADER_END.size +
-                                            frame.size +
-                                            MJPEG_PART_END.size,
-                                    )
-                                part.write(MJPEG_BOUNDARY_LINE)
-                                part.write(MJPEG_CONTENT_TYPE)
-                                part.write(MJPEG_CONTENT_LENGTH_PREFIX)
-                                part.write(contentLength)
-                                part.write(MJPEG_HEADER_END)
-                                part.write(frame)
-                                part.write(MJPEG_PART_END)
-                                part.writeTo(this)
-                                flush()
-                                lastWritten = frame
-                            } else {
-                                delay(MJPEG_IDLE_DELAY_MS)
-                            }
+                        frameFlow.collect { frame ->
+                            val contentLength = frame.size.toString().toByteArray()
+                            write(MJPEG_BOUNDARY_LINE)
+                            write(MJPEG_CONTENT_TYPE)
+                            write(MJPEG_CONTENT_LENGTH_PREFIX)
+                            write(contentLength)
+                            write(MJPEG_HEADER_END)
+                            write(frame)
+                            write(MJPEG_PART_END)
+                            flush()
                         }
                     } catch (e: IOException) {
                         // Client disconnected — end the stream

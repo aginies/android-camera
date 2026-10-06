@@ -263,6 +263,7 @@
                     <button class="btn btn-secondary" onclick="switchCamera()">📷 Switch</button>
                     <button class="btn btn-secondary" onclick="toggleTorch()">🔦 Torch</button>
                 </div>
+                <button class="btn btn-secondary" style="margin-top: 8px;" onclick="resetCamera()">↺ Reset View (0°)</button>
             </div>
 
             <div class="control-section">
@@ -743,6 +744,15 @@
                 if (lastStatus) lastStatus.rotation = next;
                 fetchStatus();
             } catch (e) { log(`Rotate: ${e.message}`, 'error'); }
+        }
+
+        async function resetCamera() {
+            try {
+                await api('/api/control/rotate/0');
+                log('Reset view to 0°');
+                if (lastStatus) lastStatus.rotation = 0;
+                fetchStatus();
+            } catch (e) { log(`Reset: ${e.message}`, 'error'); }
         }
 
         async function switchCamera() {

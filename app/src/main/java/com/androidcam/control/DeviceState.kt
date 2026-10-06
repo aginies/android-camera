@@ -137,10 +137,21 @@ class DeviceState {
     private val _rtspEnabled = AtomicBoolean(false)
     val rtspEnabled: Boolean get() = _rtspEnabled.get()
 
+    private val rtspListeners = CopyOnWriteArrayList<(Boolean) -> Unit>()
+
     /** Enable/disable the RTSP stream. */
     fun setRtspEnabled(enabled: Boolean) {
         if (_rtspEnabled.getAndSet(enabled) == enabled) return
         Timber.i("RTSP stream: ${if (enabled) "enabled" else "disabled"}")
+        rtspListeners.forEach { it(enabled) }
+    }
+
+    fun addRtspListener(listener: (Boolean) -> Unit) {
+        rtspListeners.add(listener)
+    }
+
+    fun removeRtspListener(listener: (Boolean) -> Unit) {
+        rtspListeners.remove(listener)
     }
 
     private val _isStreaming = AtomicBoolean(false)
@@ -191,6 +202,26 @@ class DeviceState {
 
     fun removeStreamUrlListener(listener: (String?) -> Unit) {
         streamUrlListeners.remove(listener)
+    }
+
+    // Public RTSP stream URL (rtsp://ip:port/), known when RTSP server is active.
+    private val _rtspUrl = AtomicReference<String?>(null)
+    val rtspUrl: String? get() = _rtspUrl.get()
+
+    private val rtspUrlListeners = CopyOnWriteArrayList<(String?) -> Unit>()
+
+    /** Set the public RTSP stream URL and notify listeners (skipped if unchanged). */
+    fun setRtspUrl(url: String?) {
+        if (_rtspUrl.getAndSet(url) == url) return
+        rtspUrlListeners.forEach { it(url) }
+    }
+
+    fun addRtspUrlListener(listener: (String?) -> Unit) {
+        rtspUrlListeners.add(listener)
+    }
+
+    fun removeRtspUrlListener(listener: (String?) -> Unit) {
+        rtspUrlListeners.remove(listener)
     }
 
     // --- Status ----------------------------------------------------------------

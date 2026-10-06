@@ -126,12 +126,12 @@ class H264StreamEncoder(
     @Volatile
     private var keyFrameRequested = false
 
-    /**
-     * Frame counter for presentation timestamps. Using a counter (rather than
-     * nanoTime) keeps the 90kHz RTP timestamp small and monotonic — a large
-     * arbitrary PTS overflows the 32-bit RTP timestamp field and makes
-     * players (VLC) treat every frame as "5+ seconds late" and drop it.
-     */
+    // Scratch buffers for preprocessing on the capturer thread
+    private var scratchRotated: ByteArray? = null
+    private var scratchDownscaled: ByteArray? = null
+    private var scratchConverted: ByteArray? = null
+
+    /** Frame counter for presentation timestamps. */
     private var frameCount = 0L
 
     /**
@@ -250,7 +250,7 @@ class H264StreamEncoder(
                     downscaleNv21(rotated, rotW, rotH, outW, outH)
                 }
             val yuv = convertToColorFormat(scaled, outW, outH)
-            pendingFrame = PendingFrame(yuv, outW, outH)
+            pendingFrame = PendingFrame(yuv.copyOf(), outW, outH)
         } catch (e: Exception) {
             Timber.w(e, "H264 encoder input error")
         }
@@ -458,7 +458,12 @@ class H264StreamEncoder(
             }
 
             CF_NV12 -> {
-                val out = ByteArray(nv21.size)
+                val out =
+                    if (scratchConverted?.size == nv21.size) {
+                        scratchConverted!!
+                    } else {
+                        ByteArray(nv21.size).also { scratchConverted = it }
+                    }
                 val ySize = w * h
                 System.arraycopy(nv21, 0, out, 0, ySize)
                 for (i in 0 until (ySize / 2) step 2) {
@@ -470,7 +475,12 @@ class H264StreamEncoder(
 
             else -> {
                 // I420: Y plane, then separate U and V planes (each w*h/4).
-                val out = ByteArray(nv21.size)
+                val out =
+                    if (scratchConverted?.size == nv21.size) {
+                        scratchConverted!!
+                    } else {
+                        ByteArray(nv21.size).also { scratchConverted = it }
+                    }
                 val ySize = w * h
                 val uvSize = ySize / 2
                 val quarter = uvSize / 2
@@ -494,7 +504,12 @@ class H264StreamEncoder(
     ): ByteArray {
         val r = ((degrees % 360) + 360) % 360
         if (r == 0) return src
-        val out = ByteArray(src.size)
+        val out =
+            if (scratchRotated?.size == src.size) {
+                scratchRotated!!
+            } else {
+                ByteArray(src.size).also { scratchRotated = it }
+            }
         val ySize = w * h
         val hw = w / 2
         val hh = h / 2
@@ -521,27 +536,7 @@ class H264StreamEncoder(
             }
 
             90 -> {
-                // 90° clockwise: out(x, y) = src(w-1-y, x); output is h x w.
-                val outW = h
-                for (y in 0 until w) {
-                    for (x in 0 until outW) {
-                        out[y * outW + x] = src[x * w + (w - 1 - y)]
-                    }
-                }
-                val outUw = outW / 2
-                for (cy in 0 until w / 2) {
-                    for (cx in 0 until outUw) {
-                        // out_uv(cx,cy) = src_uv(hw-1-cy, cx); UV rows are full width.
-                        val s = ySize + cx * w + (hw - 1 - cy) * 2
-                        val d = ySize + cy * outW + cx * 2
-                        out[d] = src[s]
-                        out[d + 1] = src[s + 1]
-                    }
-                }
-            }
-
-            else -> {
-                // 270° clockwise (90° counter-clockwise): out(x, y) = src(y, h-1-x).
+                // 90° clockwise: out(x, y) = src(h-1-x, y); output is h x w.
                 val outW = h
                 for (y in 0 until w) {
                     for (x in 0 until outW) {
@@ -551,8 +546,26 @@ class H264StreamEncoder(
                 val outUw = outW / 2
                 for (cy in 0 until w / 2) {
                     for (cx in 0 until outUw) {
-                        // out_uv(cx,cy) = src_uv(cy, hh-1-cx); UV rows are full width.
                         val s = ySize + (hh - 1 - cx) * w + cy * 2
+                        val d = ySize + cy * outW + cx * 2
+                        out[d] = src[s]
+                        out[d + 1] = src[s + 1]
+                    }
+                }
+            }
+
+            else -> {
+                // 270° clockwise (90° counter-clockwise): out(x, y) = src(x, w-1-y).
+                val outW = h
+                for (y in 0 until w) {
+                    for (x in 0 until outW) {
+                        out[y * outW + x] = src[x * w + (w - 1 - y)]
+                    }
+                }
+                val outUw = outW / 2
+                for (cy in 0 until w / 2) {
+                    for (cx in 0 until outUw) {
+                        val s = ySize + cx * w + (hw - 1 - cy) * 2
                         val d = ySize + cy * outW + cx * 2
                         out[d] = src[s]
                         out[d + 1] = src[s + 1]
@@ -571,7 +584,13 @@ class H264StreamEncoder(
         dstW: Int,
         dstH: Int,
     ): ByteArray {
-        val out = ByteArray(dstW * dstH * 3 / 2)
+        val dstSize = dstW * dstH * 3 / 2
+        val out =
+            if (scratchDownscaled?.size == dstSize) {
+                scratchDownscaled!!
+            } else {
+                ByteArray(dstSize).also { scratchDownscaled = it }
+            }
         for (y in 0 until dstH) {
             val sy = (y * srcH / dstH) * srcW
             val dy = y * dstW

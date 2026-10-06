@@ -113,6 +113,14 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread { onRecordingStateChanged(deviceState.recordingState) }
     }
 
+    private val rtspUrlListener: (String?) -> Unit = {
+        runOnUiThread { updateStreamStatus() }
+    }
+
+    private val rtspListener: (Boolean) -> Unit = {
+        runOnUiThread { updateStreamStatus() }
+    }
+
     private val screenTimeoutHandler = Handler(Looper.getMainLooper())
     private var screenTimeoutRunnable: Runnable? = null
 
@@ -135,6 +143,8 @@ class MainActivity : AppCompatActivity() {
         deviceState.addLastRecordedFileListener(lastRecordedFileListener)
         deviceState.addTimelapseListener(timelapseListener)
         deviceState.addIntervalSettingsListener(intervalSettingsListener)
+        deviceState.addRtspUrlListener(rtspUrlListener)
+        deviceState.addRtspListener(rtspListener)
         onStreamingStateChanged(deviceState.isStreaming)
         onRecordingStateChanged(deviceState.recordingState)
     }
@@ -315,7 +325,7 @@ class MainActivity : AppCompatActivity() {
         db.intervalInput.setText(intervalSec.toString())
         db.timestampSwitch.isChecked = svc.timestampEnabled()
         db.rtspSwitch.isChecked = svc.rtspEnabled()
-        db.rtspUrlText.text = getString(R.string.settings_rtsp_info) + " (port " + svc.rtspPort() + ")"
+        db.rtspUrlText.text = deviceState.rtspUrl ?: (getString(R.string.settings_rtsp_info) + " (port " + svc.rtspPort() + ")")
         db.jpegQuality.progress = svc.jpegQuality() - 10
         db.jpegQualityValue.text = svc.jpegQuality().toString()
         db.jpegQuality.setOnSeekBarChangeListener(
@@ -551,6 +561,17 @@ class MainActivity : AppCompatActivity() {
                     getString(R.string.status_starting)
                 }
             }
+        val rtsp =
+            if (deviceState.rtspEnabled) {
+                val rtspUrl = deviceState.rtspUrl
+                if (rtspUrl != null) {
+                    "\nRTSP: $rtspUrl"
+                } else {
+                    "\nRTSP: starting…"
+                }
+            } else {
+                ""
+            }
         val timelapse =
             when {
                 deviceState.timelapseEncoding -> {
@@ -565,7 +586,7 @@ class MainActivity : AppCompatActivity() {
                     ""
                 }
             }
-        binding.streamStatus.text = base + timelapse
+        binding.streamStatus.text = base + rtsp + timelapse
     }
 
     /**
@@ -622,6 +643,8 @@ class MainActivity : AppCompatActivity() {
         deviceState.removeLastRecordedFileListener(lastRecordedFileListener)
         deviceState.removeTimelapseListener(timelapseListener)
         deviceState.removeIntervalSettingsListener(intervalSettingsListener)
+        deviceState.removeRtspUrlListener(rtspUrlListener)
+        deviceState.removeRtspListener(rtspListener)
         if (bound) {
             unbindService(serviceConnection)
             bound = false
