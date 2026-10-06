@@ -56,6 +56,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.File
+import java.net.Inet4Address
 import java.net.InetAddress
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -90,6 +91,7 @@ class RecordingService :
         private const val KEY_STORAGE_LOCATION = "storage_location"
         private const val KEY_RESOLUTION = "resolution"
         private const val KEY_CUSTOM_TREE_URI = "custom_tree_uri"
+        private const val KEY_RTSP_ENABLED = "rtsp_enabled"
 
         // Prusa Connect settings persistence
         private const val KEY_PRUSA_ENABLED = "prusa_enabled"
@@ -145,6 +147,8 @@ class RecordingService :
     private var previewView: PreviewView? = null
     private var frameCapturer: FrameCapturer? = null
     private var streamServer: StreamServer? = null
+    private var rtspServer: RtspServer? = null
+    private var h264Encoder: H264StreamEncoder? = null
     private var mdnsDiscovery: MdnsDiscovery? = null
 
     // Prusa Connect: settings + upload loop (see prusa/ package).
@@ -178,6 +182,7 @@ class RecordingService :
     private var intervalSeconds = DEFAULT_INTERVAL_SECONDS
     private var timestampEnabled = false
     private var jpegQuality = DEFAULT_JPEG_QUALITY
+    private var rtspEnabled = false
 
     // Active timelapse session (null when disabled): captures one JPEG from
     // the stream every [intervalSeconds]. @Volatile: written on the main
@@ -248,6 +253,8 @@ class RecordingService :
         deviceState.timestampEnabled = timestampEnabled
         jpegQuality = prefs.getInt(KEY_JPEG_QUALITY, DEFAULT_JPEG_QUALITY)
         deviceState.jpegQuality = jpegQuality
+        rtspEnabled = prefs.getBoolean(KEY_RTSP_ENABLED, false)
+        deviceState.setRtspEnabled(rtspEnabled)
         storageLocation = prefs.getString(KEY_STORAGE_LOCATION, STORAGE_INTERNAL) ?: STORAGE_INTERNAL
         customTreeUri = prefs.getString(KEY_CUSTOM_TREE_URI, null)?.let { Uri.parse(it) }
         requestedQuality =
@@ -279,7 +286,7 @@ class RecordingService :
                     prefs.getInt(KEY_PRUSA_INTERVAL, PrusaConnectSettings.DEFAULT_INTERVAL_SECONDS),
             )
         Timber.d(
-            "Settings loaded: token=${if (rawToken.isNullOrEmpty()) "generated" else "persisted"} interval=$intervalEnabled/${intervalSeconds}s storage=$storageLocation prusa=${prusaSettings.enabled}",
+            "Settings loaded: token=${if (rawToken.isNullOrEmpty()) "generated" else "persisted"} interval=$intervalEnabled/${intervalSeconds}s storage=$storageLocation prusa=${prusaSettings.enabled} rtsp=$rtspEnabled",
         )
     }
 
@@ -435,6 +442,82 @@ class RecordingService :
         Timber.i("Timestamp overlay: ${if (enabled) "on" else "off"}")
     }
 
+    // --- RTSP server ----------------------------------------------------------
+
+    /** Whether RTSP streaming is enabled. */
+    override fun rtspEnabled(): Boolean = rtspEnabled
+
+    /** RTSP port (0 if not running). */
+    override fun rtspPort(): Int = rtspServer?.controlPort ?: 0
+
+    /** Enable/disable the RTSP stream. Persists the setting. */
+    override fun setRtspEnabled(enabled: Boolean) {
+        rtspEnabled = enabled
+        deviceState.setRtspEnabled(enabled)
+        prefs.edit().putBoolean(KEY_RTSP_ENABLED, enabled).apply()
+        if (enabled) {
+            val ip = streamServer?.getDeviceIp()
+            if (ip != null && ip != "127.0.0.1") {
+                try {
+                    startRtspServer(InetAddress.getByName(ip))
+                } catch (e: Exception) {
+                    Timber.w(e, "Failed to start RTSP server")
+                }
+            }
+            ensureH264Encoder()
+        } else {
+            stopRtspServer()
+            releaseH264Encoder()
+        }
+        Timber.i("RTSP stream: ${if (enabled) "enabled" else "disabled"}")
+    }
+
+    /**
+     * Create + start the H.264 encoder if RTSP is enabled and the camera is
+     * streaming. The encoder configures its codec on the first frame (the
+     * delivered resolution is only known at runtime).
+     */
+    private fun ensureH264Encoder() {
+        if (h264Encoder != null) return
+        if (!deviceState.isStreaming) return
+        val encoder = H264StreamEncoder()
+        encoder.start()
+        h264Encoder = encoder
+    }
+
+    private fun releaseH264Encoder() {
+        h264Encoder?.release()
+        h264Encoder = null
+    }
+
+    private fun startRtspServer(ip: InetAddress) {
+        if (rtspServer != null) return
+        val ipv4 =
+            (ip as? Inet4Address) ?: run {
+                Timber.w("RTSP server requires an IPv4 address; $ip is unsupported")
+                return
+            }
+        rtspServer =
+            RtspServer(
+                token,
+                { h264Encoder },
+                // Re-resolve the IP per SDP so a network change (DHCP, Wi-Fi
+                // switch) doesn't leave the SDP advertising a stale address.
+                { streamServer?.getDeviceIp()?.takeIf { it != "127.0.0.1" } },
+            )
+        val ok = rtspServer!!.start(ipv4)
+        if (ok) {
+            Timber.i("RTSP server started on rtsp://$ip:${rtspServer!!.controlPort}")
+        } else {
+            Timber.w("RTSP server failed to start (ports busy)")
+        }
+    }
+
+    private fun stopRtspServer() {
+        rtspServer?.stop()
+        rtspServer = null
+    }
+
     /** JPEG compression quality for the stream (10-100). */
     override fun jpegQuality(): Int = jpegQuality
 
@@ -452,14 +535,18 @@ class RecordingService :
         if (ip != "127.0.0.1") {
             // Expose the public stream URL (with token) so the UI can display it.
             deviceState.setStreamUrl("http://$ip:${deviceState.streamPort}/?token=$token")
+            val addr = InetAddress.getByName(ip)
             try {
-                val addr = InetAddress.getByName(ip)
                 mdnsDiscovery =
                     MdnsDiscovery().also {
                         it.start("AndroidCam-${Build.MODEL}", deviceState.streamPort, addr, token)
                     }
             } catch (e: Exception) {
                 Timber.w(e, "mDNS setup failed")
+            }
+            // Start RTSP server if enabled.
+            if (rtspEnabled) {
+                startRtspServer(addr)
             }
         } else {
             Timber.w("No local network address found; skipping mDNS advertising")
@@ -468,6 +555,7 @@ class RecordingService :
 
     /** Stop the stream server + mDNS advertising. */
     private fun stopServerAndDiscovery() {
+        stopRtspServer()
         mdnsDiscovery?.stop()
         mdnsDiscovery = null
         streamServer?.stop()
@@ -637,10 +725,18 @@ class RecordingService :
     override fun startStreaming() {
         if (deviceState.isStreaming) return
         val capturer =
-            FrameCapturer(deviceState) { jpeg ->
-                streamServer?.publishFrame(jpeg)
-                timelapseCapture?.onFrame(jpeg)
-            }
+            FrameCapturer(
+                deviceState,
+                onFrame = { jpeg ->
+                    streamServer?.publishFrame(jpeg)
+                    timelapseCapture?.onFrame(jpeg)
+                },
+                // Raw NV21 feed for the H.264 RTSP encoder (rotation is applied
+                // inside the encoder to match the MJPEG stream).
+                onYuvFrame = { nv21, w, h, rotation ->
+                    h264Encoder?.inputFrame(nv21, w, h, rotation)
+                },
+            )
         frameCapturer = capturer
         cameraManager =
             CameraManager(
@@ -658,6 +754,7 @@ class RecordingService :
                 it.startCamera()
             }
         deviceState.startStreaming()
+        if (rtspEnabled) ensureH264Encoder()
         updateNotification()
         Timber.i("Streaming started (camera on)")
     }
@@ -678,6 +775,7 @@ class RecordingService :
         // capturer's executor wrapper.
         frameCapturer?.shutdown()
         frameCapturer = null
+        releaseH264Encoder()
         deviceState.stopStreaming()
         updateNotification()
         Timber.i("Streaming stopped (camera off)")

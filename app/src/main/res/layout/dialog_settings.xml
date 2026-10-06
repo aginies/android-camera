@@ -64,6 +64,24 @@
             android:text="@string/settings_timestamp_title"
             android:textSize="16sp" />
 
+        <Switch
+            android:id="@+id/rtspSwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/settings_rtsp_title"
+            android:textSize="16sp" />
+
+        <TextView
+            android:id="@+id/rtspUrlText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="4dp"
+            android:text="@string/settings_rtsp_info"
+            android:textColor="?android:attr/textColorSecondary"
+            android:textSize="13sp" />
+
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"

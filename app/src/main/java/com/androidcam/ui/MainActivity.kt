@@ -314,6 +314,8 @@ class MainActivity : AppCompatActivity() {
         db.intervalSwitch.isChecked = enabled
         db.intervalInput.setText(intervalSec.toString())
         db.timestampSwitch.isChecked = svc.timestampEnabled()
+        db.rtspSwitch.isChecked = svc.rtspEnabled()
+        db.rtspUrlText.text = getString(R.string.settings_rtsp_info) + " (port " + svc.rtspPort() + ")"
         db.jpegQuality.progress = svc.jpegQuality() - 10
         db.jpegQualityValue.text = svc.jpegQuality().toString()
         db.jpegQuality.setOnSeekBarChangeListener(
@@ -440,6 +442,7 @@ class MainActivity : AppCompatActivity() {
         svc.updateToken(token)
         svc.updateIntervalSettings(db.intervalSwitch.isChecked, intervalSec)
         svc.setTimestampEnabled(db.timestampSwitch.isChecked)
+        svc.setRtspEnabled(db.rtspSwitch.isChecked)
         svc.setJpegQuality(db.jpegQuality.progress + 10)
         svc.setResolution(db.resolutionSpinner.selectedItem as? String ?: "1920x1080")
         val storage =

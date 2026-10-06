@@ -277,6 +277,11 @@
                     <input type="checkbox" id="timestampEnabled" onchange="setTimestamp()">
                     Timestamp on frames (live view + timelapse)
                 </label>
+                <label style="margin-top: 8px; display: block;">
+                    <input type="checkbox" id="rtspEnabled" onchange="setRtsp()">
+                    RTSP stream (H.264)
+                </label>
+                <div id="rtspInfo" style="font-size: 12px; color: #888; margin-top: 2px; display: none;"></div>
                 <div class="slider-group">
                     <label>
                         <span>Screen Timeout</span>
@@ -542,6 +547,21 @@
                 tsBox.checked = data.timestampEnabled === true;
             }
 
+            // Keep the RTSP controls in sync.
+            const rtspBox = document.getElementById('rtspEnabled');
+            const rtspInfo = document.getElementById('rtspInfo');
+            if (rtspBox && rtspBox.checked !== (data.rtspEnabled === true)) {
+                rtspBox.checked = data.rtspEnabled === true;
+            }
+            if (rtspInfo) {
+                if (data.rtspEnabled && data.ip && data.rtspPort) {
+                    rtspInfo.style.display = 'block';
+                    rtspInfo.textContent = `rtsp://${data.ip}:${data.rtspPort}/`;
+                } else {
+                    rtspInfo.style.display = 'none';
+                }
+            }
+
             // Keep the timelapse controls in sync.
             const intBox = document.getElementById('intervalEnabled');
             if (intBox && intBox.checked !== (data.intervalEnabled === true)) {
@@ -671,6 +691,15 @@
             } catch (e) { log(`Timestamp: ${e.message}`, 'error'); }
         }
 
+        async function setRtsp() {
+            const enabled = document.getElementById('rtspEnabled').checked;
+            try {
+                await api(`/api/control/rtsp?enabled=${enabled}`);
+                log(`RTSP stream: ${enabled ? 'on' : 'off'}`);
+                fetchStatus();
+            } catch (e) { log(`RTSP: ${e.message}`, 'error'); }
+        }
+
         async function setJpegQuality() {
             const quality = parseInt(document.getElementById('jpegQuality').value, 10);
             try {
@@ -704,9 +733,15 @@
         }
 
         async function rotateCamera(deg) {
+            const current = (lastStatus && typeof lastStatus.rotation === 'number')
+                ? lastStatus.rotation
+                : 0;
+            const next = ((current + deg) % 360 + 360) % 360;
             try {
-                await api(`/api/control/rotate/${deg}`);
-                log(`Rotated to ${deg}°`);
+                await api(`/api/control/rotate/${next}`);
+                log(`Rotated to ${next}°`);
+                if (lastStatus) lastStatus.rotation = next;
+                fetchStatus();
             } catch (e) { log(`Rotate: ${e.message}`, 'error'); }
         }
 

@@ -102,6 +102,15 @@ class StreamServer(
 
         fun setTimestampEnabled(enabled: Boolean)
 
+        /** Whether RTSP streaming is enabled. */
+        fun rtspEnabled(): Boolean
+
+        /** RTSP port (0 if not running). */
+        fun rtspPort(): Int
+
+        /** Enable/disable the RTSP stream. */
+        fun setRtspEnabled(enabled: Boolean)
+
         /** JPEG compression quality for the stream (10-100). */
         fun jpegQuality(): Int
 
@@ -432,8 +441,23 @@ class StreamServer(
                     post("/rotate/{angle}") {
                         if (!authorized(call)) return@post unauthorized(call)
                         val angle = call.parameters["angle"]?.toIntOrNull() ?: 0
-                        deviceState.rotationDegrees = angle
-                        call.respondText("Rotated to $angle degrees")
+                        val normalized = ((angle % 360) + 360) % 360
+                        deviceState.rotationDegrees = normalized
+                        call.respondText("Rotated to $normalized degrees")
+                    }
+
+                    post("/rotate") {
+                        if (!authorized(call)) return@post unauthorized(call)
+                        val delta = call.parameters["delta"]?.toIntOrNull()
+                        val angle = call.parameters["angle"]?.toIntOrNull()
+                        val newRotation =
+                            when {
+                                delta != null -> ((deviceState.rotationDegrees + delta) % 360 + 360) % 360
+                                angle != null -> ((angle % 360) + 360) % 360
+                                else -> ((deviceState.rotationDegrees + 90) % 360 + 360) % 360
+                            }
+                        deviceState.rotationDegrees = newRotation
+                        call.respondText("Rotated to $newRotation degrees")
                     }
 
                     post("/toggle-torch") {
@@ -486,6 +510,13 @@ class StreamServer(
                         val enabled = call.parameters["enabled"]?.toBooleanStrictOrNull() ?: false
                         control.setTimestampEnabled(enabled)
                         call.respondText("Timestamp: ${if (enabled) "on" else "off"}")
+                    }
+
+                    post("/rtsp") {
+                        if (!authorized(call)) return@post unauthorized(call)
+                        val enabled = call.parameters["enabled"]?.toBooleanStrictOrNull() ?: false
+                        control.setRtspEnabled(enabled)
+                        call.respondText("RTSP: ${if (enabled) "on" else "off"}")
                     }
 
                     post("/jpeg-quality") {
@@ -570,6 +601,8 @@ class StreamServer(
             put("prusaToken", control.prusaSettings().token)
             put("prusaName", control.prusaSettings().cameraName)
             put("prusaInterval", control.prusaSettings().intervalSeconds)
+            put("rtspEnabled", control.rtspEnabled())
+            put("rtspPort", control.rtspPort())
             put("error", deviceState.lastError ?: "")
         }
 
@@ -695,6 +728,16 @@ class StreamServer(
                     buildJsonObject {
                         put("status", "ok")
                         put("timestampEnabled", enabled)
+                    }.toString()
+                }
+
+                "set_rtsp" -> {
+                    val enabled = cmd["enabled"]?.jsonPrimitive?.booleanOrNull ?: false
+                    control.setRtspEnabled(enabled)
+                    buildJsonObject {
+                        put("status", "ok")
+                        put("rtspEnabled", control.rtspEnabled())
+                        put("rtspPort", control.rtspPort())
                     }.toString()
                 }
 

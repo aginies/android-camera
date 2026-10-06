@@ -1,6 +1,7 @@
 package com.androidcam.control
 
 import com.androidcam.prusa.PrusaState
+import timber.log.Timber
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -132,6 +133,15 @@ class DeviceState {
         set(value) {
             _streamPort.set(value)
         }
+
+    private val _rtspEnabled = AtomicBoolean(false)
+    val rtspEnabled: Boolean get() = _rtspEnabled.get()
+
+    /** Enable/disable the RTSP stream. */
+    fun setRtspEnabled(enabled: Boolean) {
+        if (_rtspEnabled.getAndSet(enabled) == enabled) return
+        Timber.i("RTSP stream: ${if (enabled) "enabled" else "disabled"}")
+    }
 
     private val _isStreaming = AtomicBoolean(false)
     val isStreaming: Boolean get() = _isStreaming.get()

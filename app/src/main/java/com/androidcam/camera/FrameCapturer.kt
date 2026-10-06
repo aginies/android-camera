@@ -32,10 +32,14 @@ import kotlin.math.ceil
  * When [DeviceState.timestampEnabled] is set, a date/time stamp is burned in
  * (bottom-left) on every frame, so the live view and the timelapse frames
  * captured from this feed both show it.
+ *
+ * The raw NV21 frame (unrotated) is also handed to [onYuvFrame] when set —
+ * the H.264 RTSP encoder consumes it and applies the rotation itself.
  */
 class FrameCapturer(
     private val deviceState: DeviceState,
     private val onFrame: (jpegBytes: ByteArray) -> Unit,
+    private val onYuvFrame: ((nv21: ByteArray, width: Int, height: Int, rotation: Int) -> Unit)? = null,
 ) : ImageAnalysis.Analyzer {
     companion object {
         /** Minimum time between processed frames (~10 fps stream rate). */
@@ -78,8 +82,12 @@ class FrameCapturer(
             if (now - lastFrameNanos.get() < MIN_FRAME_INTERVAL_NS) return
             lastFrameNanos.set(now)
 
-            val jpeg = imageProxyToJpeg(imageProxy)
             val rotation = deviceState.rotationDegrees % 360
+            // One NV21 conversion per frame, shared by the JPEG path and the
+            // optional H.264 encoder feed.
+            val nv21 = imageProxyToNv21(imageProxy)
+            onYuvFrame?.invoke(nv21, imageProxy.width, imageProxy.height, rotation)
+            val jpeg = nv21ToJpeg(nv21, imageProxy.width, imageProxy.height)
             val frame =
                 when {
                     rotation == 0 && deviceState.timestampEnabled -> overlayTimestamp(jpeg)
@@ -95,15 +103,31 @@ class FrameCapturer(
         }
     }
 
+    /** Compress an NV21 buffer to JPEG at the configured quality. */
+    private fun nv21ToJpeg(
+        nv21: ByteArray,
+        width: Int,
+        height: Int,
+    ): ByteArray {
+        val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
+        val out = ByteArrayOutputStream(width * height / 8)
+        yuvImage.compressToJpeg(
+            Rect(0, 0, width, height),
+            deviceState.jpegQuality,
+            out,
+        )
+        return out.toByteArray()
+    }
+
     /**
-     * Convert an [ImageProxy] in YUV_420_888 format to a JPEG byte array.
+     * Convert an [ImageProxy] in YUV_420_888 format to an NV21 byte array.
      *
      * The three YUV_420_888 planes are repacked into NV21 (which [YuvImage]
      * understands), honouring row and pixel strides so tiled or interleaved
      * plane layouts work. Plane data is moved with bulk `ByteBuffer.get`
      * transfers instead of per-byte reads.
      */
-    private fun imageProxyToJpeg(image: ImageProxy): ByteArray {
+    private fun imageProxyToNv21(image: ImageProxy): ByteArray {
         val width = image.width
         val height = image.height
 
@@ -166,14 +190,7 @@ class FrameCapturer(
             }
         }
 
-        val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
-        val out = ByteArrayOutputStream(width * height / 8)
-        yuvImage.compressToJpeg(
-            Rect(0, 0, width, height),
-            deviceState.jpegQuality,
-            out,
-        )
-        return out.toByteArray()
+        return nv21
     }
 
     /** Rotate a JPEG by [degrees] (90/180/270), stamping the timestamp if enabled. */
@@ -188,12 +205,20 @@ class FrameCapturer(
         val matrix = Matrix().apply { postRotate(degrees.toFloat()) }
         val rotated = Bitmap.createBitmap(src, 0, 0, src.width, src.height, matrix, true)
         if (rotated !== src) src.recycle()
-        if (deviceState.timestampEnabled) {
-            drawTimestamp(Canvas(rotated), rotated.height)
-        }
+        val finalBitmap =
+            if (deviceState.timestampEnabled) {
+                // Bitmap.createBitmap(..., matrix, ...) returns an immutable bitmap;
+                // copy to ARGB_8888 mutable before passing to Canvas.
+                val mutable = rotated.copy(Bitmap.Config.ARGB_8888, true)
+                if (mutable !== rotated) rotated.recycle()
+                drawTimestamp(Canvas(mutable), mutable.height)
+                mutable
+            } else {
+                rotated
+            }
         val out = ByteArrayOutputStream()
-        rotated.compress(Bitmap.CompressFormat.JPEG, deviceState.jpegQuality, out)
-        rotated.recycle()
+        finalBitmap.compress(Bitmap.CompressFormat.JPEG, deviceState.jpegQuality, out)
+        finalBitmap.recycle()
         return out.toByteArray()
     }
 
