@@ -3,6 +3,9 @@
 An Android app that streams the camera over the local network as MJPEG, records
 H.264 MP4 video, and offers remote control via a token-protected web UI.
 
+
+![android-cam](screen.jpg)
+
 ## Features
 
 - **Live MJPEG stream** (~10 fps, 720p) served over HTTP
