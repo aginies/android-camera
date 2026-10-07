@@ -17,6 +17,20 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // Optional release signing (CI): set KEYSTORE_FILE + STORE_PASSWORD +
+    // KEY_ALIAS + KEY_PASSWORD env vars to sign release builds. Without them,
+    // release builds are unsigned (testing only).
+    signingConfigs {
+        if (System.getenv("KEYSTORE_FILE") != null) {
+            create("release") {
+                storeFile = file(System.getenv("KEYSTORE_FILE")!!)
+                storePassword = System.getenv("STORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -25,6 +39,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            if (System.getenv("KEYSTORE_FILE") != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
         debug {
             isMinifyEnabled = false
